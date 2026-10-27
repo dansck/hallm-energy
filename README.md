@@ -52,8 +52,10 @@ feature switch explicitly `on`.** Anything else (including unavailable) only
 reports the intended writes. Leaving live mode turns grid charging off once.
 
 After mapping, verify the charge counter and call `hallm_energy.provision`
-once: from then on the counter is trusted, and replacing it means changing
-the counter epoch (which blocks until resolved). `hallm_energy.safety_stop`
+once: from then on the counter is trusted. A changed counter entity or epoch,
+or a lost stored state, blocks; `hallm_energy.reprovision` trusts the
+configured counter again (only with no grant, step or episode in flight;
+recorded in the audit). `hallm_energy.safety_stop`
 turns grid charging off immediately (live mode only).
 
 The diagnostic sensor `sensor.hallm_energy_status` shows the overall state,

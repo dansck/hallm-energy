@@ -176,6 +176,53 @@ def provision(
     )
 
 
+def reprovision(
+    state: StoreState,
+    *,
+    counter_id: str,
+    counter_epoch: str,
+    trusted_raw_dc_kwh: float,
+    at: datetime,
+) -> StoreState:
+    """Explicit procedure out of a counter change or a lost state: trust a
+    (new) counter from now on. Only with nothing in flight — no active grant,
+    no open episode, no pending step — so no budget can be re-released; the
+    closed ledger stays. Reconcile is required again; the old and new counter
+    identity go to the audit."""
+    if state.provisioning_state == "uninitialized":
+        raise GrantTransitionError("not provisioned yet — use provision")
+    if state.active_grant is not None or state.pending_step is not None:
+        raise GrantTransitionError("cannot reprovision with a grant or step in flight")
+    if any(e.state == "open" for e in state.episode_ledger):
+        raise GrantTransitionError("cannot reprovision with an open episode")
+    old = state.counter_state
+    revision = state.state_revision + 1
+    audit = _audit(state, f"reprovision:{revision}", {
+        "kind": "reprovisioned",
+        "at": int(at.timestamp()),
+        "previous_provisioning": state.provisioning_state,
+        "previous_reconcile": state.reconcile_state.reason_code,
+        "previous_counter_id": None if old is None else old.counter_id,
+        "previous_counter_epoch": None if old is None else old.counter_epoch,
+        "previous_trusted_raw_dc_kwh": None if old is None else old.last_trusted_raw_dc_kwh,
+        "counter_id": counter_id,
+        "counter_epoch": counter_epoch,
+        "trusted_raw_dc_kwh": trusted_raw_dc_kwh,
+    })
+    return _bump(
+        state,
+        provisioning_state="ready",
+        counter_state=CounterState(
+            counter_id=counter_id,
+            counter_epoch=counter_epoch,
+            last_trusted_raw_dc_kwh=trusted_raw_dc_kwh,
+            last_changed_at=at,
+        ),
+        reconcile_state=ReconcileState("required", "reprovisioned"),
+        pending_audit=audit,
+    )
+
+
 def ack_audit(state: StoreState, event_ids: set[str]) -> StoreState:
     """Drop events only after the outbox durably took them over."""
     remaining = tuple(e for e in state.pending_audit if e.event_id not in event_ids)

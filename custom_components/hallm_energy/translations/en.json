@@ -151,6 +151,10 @@
     "safety_stop": {
       "name": "Safety stop",
       "description": "Turn grid charging off now (live mode only); preempts any running sequence."
+    },
+    "reprovision": {
+      "name": "Reprovision",
+      "description": "Trust the configured charge counter again after it was replaced, its epoch changed or the stored state was lost. Refused while a grant, step or episode is in flight; recorded in the audit."
     }
   }
 }

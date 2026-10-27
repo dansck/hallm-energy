@@ -29,6 +29,7 @@ from .const import (
     CONF_INSTALLATION_ID,
     DOMAIN,
     SERVICE_PROVISION,
+    SERVICE_REPROVISION,
     SERVICE_SAFETY_STOP,
     STORAGE_KEY,
     STORAGE_VERSION,
@@ -123,10 +124,19 @@ def _register_services(hass: HomeAssistant) -> None:
             raise ServiceValidationError(str(exc)) from exc
         await controller.async_tick()
 
+    async def reprovision(call: ServiceCall) -> None:
+        controller = _controller(hass)
+        try:
+            await controller.async_provision(again=True)
+        except (ProvisionError, StoreNotDurableError) as exc:
+            raise ServiceValidationError(str(exc)) from exc
+        await controller.async_tick()
+
     async def safety_stop(call: ServiceCall) -> None:
         await _controller(hass).async_safety_stop()
 
     async_register_admin_service(hass, DOMAIN, SERVICE_PROVISION, provision)
+    async_register_admin_service(hass, DOMAIN, SERVICE_REPROVISION, reprovision)
     async_register_admin_service(hass, DOMAIN, SERVICE_SAFETY_STOP, safety_stop)
 
 
@@ -137,6 +147,6 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     unloaded = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
     hass.data.get(DOMAIN, {}).pop(entry.entry_id, None)
     if not hass.data.get(DOMAIN):
-        for service in (SERVICE_PROVISION, SERVICE_SAFETY_STOP):
+        for service in (SERVICE_PROVISION, SERVICE_REPROVISION, SERVICE_SAFETY_STOP):
             hass.services.async_remove(DOMAIN, service)
     return unloaded

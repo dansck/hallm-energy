@@ -22,6 +22,7 @@ from custom_components.hallm_energy.lifecycle import (
     provision,
     reconcile,
     record_step_result,
+    reprovision,
     set_reconcile,
     step_grant,
 )
@@ -663,3 +664,56 @@ def test_reconcile_below_budget_backup_stays_active():
     result = rec(on_startup(activated()), on=True, raw=7207.9, minutes=120)
     assert result.state.active_grant.status == "active"
     assert result.state.reconcile_state.value == "ready"
+
+
+# --- reprovision ----------------------------------------------------------------------
+
+
+def _reprovision(state, counter_id="sensor.new_counter", raw=100.0):
+    return reprovision(state, counter_id=counter_id, counter_epoch="e2",
+                       trusted_raw_dc_kwh=raw, at=T0 + timedelta(hours=1))
+
+
+def test_reprovision_out_of_counter_change_keeps_ledger_and_audits():
+    closed = confirm_closed(
+        step(activated(reading=reading(7205.0, T0 + timedelta(minutes=15))), soc_now_pct=25.0,
+             reading=reading(7205.0, T0 + timedelta(minutes=30))).state,
+        now=T0 + timedelta(minutes=31),
+    )
+    blocked = set_reconcile(closed, "blocked", "counter_epoch_changed")
+    again = _reprovision(blocked)
+    assert again.provisioning_state == "ready"
+    assert again.reconcile_state == ReconcileState("required", "reprovisioned")
+    assert again.counter_state == CounterState("sensor.new_counter", "e2", 100.0,
+                                               T0 + timedelta(hours=1))
+    assert again.episode_ledger == closed.episode_ledger
+    event = again.pending_audit[-1].payload
+    assert event["kind"] == "reprovisioned"
+    assert event["previous_counter_id"] == COUNTER
+    assert event["previous_reconcile"] == "counter_epoch_changed"
+    assert parse_store_state(again.to_dict()) == again
+
+
+def test_reprovision_out_of_lost_state():
+    lost = lost_state(installation_id="i", policy_version="p", core_version="c",
+                      reason="store_lost")
+    again = _reprovision(lost)
+    assert again.provisioning_state == "ready"
+    assert again.pending_audit[-1].payload["previous_counter_id"] is None
+
+
+@pytest.mark.parametrize("state_factory", [
+    lambda: prepared(),                       # grant in flight
+    lambda: activated(),
+    lambda: new_installation_state(installation_id="i", policy_version="p", core_version="c"),
+])
+def test_reprovision_refused_with_anything_in_flight(state_factory):
+    with pytest.raises(GrantTransitionError):
+        _reprovision(state_factory())
+
+
+def test_reprovision_refused_with_pending_step():
+    proposed = step(prepared()).state
+    assert proposed.pending_step is not None
+    with pytest.raises(GrantTransitionError):
+        _reprovision(proposed)

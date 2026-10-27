@@ -18,4 +18,5 @@ CONF_INSTALLATION_ID = "installation_id"
 TICK_INTERVAL = timedelta(seconds=30)
 
 SERVICE_PROVISION = "provision"
+SERVICE_REPROVISION = "reprovision"
 SERVICE_SAFETY_STOP = "safety_stop"

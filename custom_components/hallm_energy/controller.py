@@ -30,7 +30,7 @@ from .config import EnergyConfig
 from .device_io import DeviceIO, WriteResult
 from .executor import Gates, GrantExecutor, Snapshot
 from .inputs import build_inputs
-from .lifecycle import provision, reconcile, set_reconcile
+from .lifecycle import GrantTransitionError, provision, reconcile, reprovision, set_reconcile
 from .runtime import EnergyRuntime
 from .slot_plan import Op, Readback, stop_ops
 from .state_schema import StoreState
@@ -117,25 +117,31 @@ class EnergyController:
     async def async_safety_stop(self) -> list[WriteResult]:
         return await self.executor.async_safety_stop()
 
-    async def async_provision(self) -> None:
-        """Explicit: trust the configured charge counter from now on."""
+    async def async_provision(self, *, again: bool = False) -> None:
+        """Explicit: trust the configured charge counter from now on. `again` =
+        the procedure out of a counter change / lost state (`reprovision`)."""
         async with self._lock:
             state = self.runtime.state
             if self.runtime.blocked_reason is not None or state is None:
                 raise ProvisionError(f"runtime blocked: {self.runtime.blocked_reason}")
-            if state.provisioning_state != "uninitialized":
+            if not again and state.provisioning_state != "uninitialized":
                 raise ProvisionError(f"provisioning is {state.provisioning_state}")
             now = dt_util.utcnow()
             reading = build_inputs(self.hass, self.config, now).snapshot.reading
             if not reading.available:
                 raise ProvisionError("charge counter is unavailable")
-            await self.runtime.async_commit(provision(
-                state,
-                counter_id=reading.counter_id,
-                counter_epoch=self.config.counter_epoch,
-                trusted_raw_dc_kwh=reading.raw_kwh,
-                at=now,
-            ))
+            transition = reprovision if again else provision
+            try:
+                new_state = transition(
+                    state,
+                    counter_id=reading.counter_id,
+                    counter_epoch=self.config.counter_epoch,
+                    trusted_raw_dc_kwh=reading.raw_kwh,
+                    at=now,
+                )
+            except GrantTransitionError as exc:
+                raise ProvisionError(str(exc)) from exc
+            await self.runtime.async_commit(new_state)
 
     # --- one step ------------------------------------------------------------------
 

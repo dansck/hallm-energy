@@ -211,3 +211,33 @@ async def test_persistence_fault_is_retried_and_requires_reconcile(storage_hass,
     assert controller.runtime.persistence_fault is None
     assert controller.runtime.state.reconcile_state.reason_code is None  # reconciled again
     assert status.result == "cycle"
+
+
+
+async def test_wrong_counter_is_fixed_by_reprovision(storage_hass, inverter):
+    """A wrong counter entity provisioned first, then corrected in the options:
+    the change blocks, and only an explicit reprovision trusts the new one."""
+    from custom_components.hallm_energy.lifecycle import provision
+
+    wrong = "sensor.battery_total_discharge"
+    storage_hass.states.async_set(wrong, "6842.1")
+    state = provision(_fresh_state(), counter_id=wrong, counter_epoch="e1",
+                      trusted_raw_dc_kwh=6842.1, at=NOW)
+    controller = await _controller(storage_hass, state)
+    await controller.async_tick()
+    assert controller.runtime.state.reconcile_state.value == "blocked"
+    assert controller.runtime.state.reconcile_state.reason_code == "counter_epoch_changed"
+    with pytest.raises(ProvisionError):
+        await controller.async_provision()
+
+    await controller.async_provision(again=True)
+    assert controller.runtime.state.counter_state.counter_id == COUNTER
+    assert controller.runtime.state.counter_state.last_trusted_raw_dc_kwh == 7204.0
+    await controller.async_tick()
+    assert controller.runtime.state.reconcile_state.value == "ready"
+
+
+async def test_reprovision_refused_while_a_grant_is_active(storage_hass, inverter):
+    controller = await _controller(storage_hass, set_reconcile(activated(), "ready", None))
+    with pytest.raises(ProvisionError):
+        await controller.async_provision(again=True)
