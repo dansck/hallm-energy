@@ -7,7 +7,7 @@ or a crash can't silently re-authorize energy that was already spent).
 
 ## Status: early
 
-In place, shadow only (nothing writes to any device yet):
+In place:
 
 - durable local state in Home Assistant's `.storage/` (fsynced atomic writes,
   confirmed by reading back; no 255-character `input_text` limit), validated
@@ -21,12 +21,43 @@ In place, shadow only (nothing writes to any device yet):
   every floor raised) → enable in the current slot with the master switch
   last → stop with the master switch first; every write confirmed by
   readback, one write arbitration point, and a safety stop that preempts any
-  enabling sequence. Writes only when a shadow switch is explicitly off AND a
-  feature switch explicitly on — anything else only reports intents.
+  enabling sequence;
+- a control loop every 30 s, with inputs taken from Home Assistant states:
+  battery SOC and charge counter (only while a separate device-link
+  entity is reporting), slot starts read from the inverter, and off-peak only
+  when the measured tariff relay AND a current tariff schedule both say so.
 
-Not implemented yet: configuration (entity mapping) and the periodic loop,
-Home Assistant entities/services for diagnostics, restoring normal floors
-after a grant, and the history outbox.
+Nothing creates grants yet; the loop keeps the stored state reconciled and,
+in live mode, turns grid charging off whenever no grant allows it.
+
+Not implemented yet: grant creation, restoring normal floors after a grant,
+and the history outbox.
+
+## Configuration
+
+Settings → Devices & services → Add integration → Hallm Energy, then map the
+entities (all of them can be changed later in the integration's options):
+
+| Role | Example |
+| --- | --- |
+| Battery SOC, charge counter (total DC charge, kWh), device-link liveness | sensors |
+| Off-peak relay, tariff schedule | binary sensor, sensor with `schedule` and `last_update` attributes |
+| Grid charge master switch | switch |
+| Per slot (6): start (`HHMM`), capacity (%), charge enable | number, number, switch |
+| Shadow switch, feature switch | input booleans |
+
+**Writes happen only while the shadow switch is explicitly `off` and the
+feature switch explicitly `on`.** Anything else (including unavailable) only
+reports the intended writes. Leaving live mode turns grid charging off once.
+
+After mapping, verify the charge counter and call `hallm_energy.provision`
+once: from then on the counter is trusted, and replacing it means changing
+the counter epoch (which blocks until resolved). `hallm_energy.safety_stop`
+turns grid charging off immediately (live mode only).
+
+The diagnostic sensor `sensor.hallm_energy_status` shows the overall state,
+the stored grant, the last tick's result, input problems, intended writes
+and write outcomes.
 
 ## Install
 

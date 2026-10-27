@@ -1,0 +1,160 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Hallm Energy",
+        "description": "Map the entities the integration reads and writes. Nothing is written until the shadow switch is off and the feature switch is on.",
+        "data": {
+          "soc_entity": "Battery SOC",
+          "counter_entity": "Charge counter",
+          "counter_epoch": "Counter epoch",
+          "liveness_entity": "Device link liveness",
+          "hdo_relay_entity": "Off-peak relay",
+          "hdo_schedule_entity": "Tariff schedule",
+          "grid_charge_entity": "Grid charge (master)",
+          "shadow_entity": "Shadow switch",
+          "feature_entity": "Feature switch",
+          "slot1_start_entity": "Slot 1 start",
+          "slot1_capacity_entity": "Slot 1 capacity",
+          "slot1_charge_enable_entity": "Slot 1 charge enable",
+          "slot2_start_entity": "Slot 2 start",
+          "slot2_capacity_entity": "Slot 2 capacity",
+          "slot2_charge_enable_entity": "Slot 2 charge enable",
+          "slot3_start_entity": "Slot 3 start",
+          "slot3_capacity_entity": "Slot 3 capacity",
+          "slot3_charge_enable_entity": "Slot 3 charge enable",
+          "slot4_start_entity": "Slot 4 start",
+          "slot4_capacity_entity": "Slot 4 capacity",
+          "slot4_charge_enable_entity": "Slot 4 charge enable",
+          "slot5_start_entity": "Slot 5 start",
+          "slot5_capacity_entity": "Slot 5 capacity",
+          "slot5_charge_enable_entity": "Slot 5 charge enable",
+          "slot6_start_entity": "Slot 6 start",
+          "slot6_capacity_entity": "Slot 6 capacity",
+          "slot6_charge_enable_entity": "Slot 6 charge enable"
+        },
+        "data_description": {
+          "soc_entity": "Sensor with the battery state of charge (%).",
+          "counter_entity": "Total DC charge energy of the battery (kWh, only increases while charging).",
+          "counter_epoch": "Change only when the counter is replaced or reset; a change blocks until resolved.",
+          "liveness_entity": "A sensor of the same device link that is reported continuously (e.g. a power reading); proves the SOC and counter are current.",
+          "hdo_relay_entity": "Measured tariff relay: on = off-peak now.",
+          "hdo_schedule_entity": "Sensor with a `schedule` attribute (list of start, end and tariff NT or VT) and `last_update`.",
+          "grid_charge_entity": "Inverter master switch for charging from the grid.",
+          "shadow_entity": "Writes happen only while this is explicitly off.",
+          "feature_entity": "Writes happen only while this is explicitly on.",
+          "slot1_start_entity": "Start of time-of-use slot 1 (HHMM number).",
+          "slot1_capacity_entity": "SOC floor and grid-charge target of slot 1 (%).",
+          "slot1_charge_enable_entity": "Grid charging permission of slot 1.",
+          "slot2_start_entity": "Start of time-of-use slot 2 (HHMM number).",
+          "slot2_capacity_entity": "SOC floor and grid-charge target of slot 2 (%).",
+          "slot2_charge_enable_entity": "Grid charging permission of slot 2.",
+          "slot3_start_entity": "Start of time-of-use slot 3 (HHMM number).",
+          "slot3_capacity_entity": "SOC floor and grid-charge target of slot 3 (%).",
+          "slot3_charge_enable_entity": "Grid charging permission of slot 3.",
+          "slot4_start_entity": "Start of time-of-use slot 4 (HHMM number).",
+          "slot4_capacity_entity": "SOC floor and grid-charge target of slot 4 (%).",
+          "slot4_charge_enable_entity": "Grid charging permission of slot 4.",
+          "slot5_start_entity": "Start of time-of-use slot 5 (HHMM number).",
+          "slot5_capacity_entity": "SOC floor and grid-charge target of slot 5 (%).",
+          "slot5_charge_enable_entity": "Grid charging permission of slot 5.",
+          "slot6_start_entity": "Start of time-of-use slot 6 (HHMM number).",
+          "slot6_capacity_entity": "SOC floor and grid-charge target of slot 6 (%).",
+          "slot6_charge_enable_entity": "Grid charging permission of slot 6."
+        }
+      }
+    },
+    "error": {
+      "invalid_mapping": "Incomplete mapping, an entity used for two written roles, or the same shadow and feature switch."
+    },
+    "abort": {
+      "single_instance_allowed": "Only one installation is supported."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Hallm Energy",
+        "description": "Map the entities the integration reads and writes. Nothing is written until the shadow switch is off and the feature switch is on.",
+        "data": {
+          "soc_entity": "Battery SOC",
+          "counter_entity": "Charge counter",
+          "counter_epoch": "Counter epoch",
+          "liveness_entity": "Device link liveness",
+          "hdo_relay_entity": "Off-peak relay",
+          "hdo_schedule_entity": "Tariff schedule",
+          "grid_charge_entity": "Grid charge (master)",
+          "shadow_entity": "Shadow switch",
+          "feature_entity": "Feature switch",
+          "slot1_start_entity": "Slot 1 start",
+          "slot1_capacity_entity": "Slot 1 capacity",
+          "slot1_charge_enable_entity": "Slot 1 charge enable",
+          "slot2_start_entity": "Slot 2 start",
+          "slot2_capacity_entity": "Slot 2 capacity",
+          "slot2_charge_enable_entity": "Slot 2 charge enable",
+          "slot3_start_entity": "Slot 3 start",
+          "slot3_capacity_entity": "Slot 3 capacity",
+          "slot3_charge_enable_entity": "Slot 3 charge enable",
+          "slot4_start_entity": "Slot 4 start",
+          "slot4_capacity_entity": "Slot 4 capacity",
+          "slot4_charge_enable_entity": "Slot 4 charge enable",
+          "slot5_start_entity": "Slot 5 start",
+          "slot5_capacity_entity": "Slot 5 capacity",
+          "slot5_charge_enable_entity": "Slot 5 charge enable",
+          "slot6_start_entity": "Slot 6 start",
+          "slot6_capacity_entity": "Slot 6 capacity",
+          "slot6_charge_enable_entity": "Slot 6 charge enable"
+        },
+        "data_description": {
+          "soc_entity": "Sensor with the battery state of charge (%).",
+          "counter_entity": "Total DC charge energy of the battery (kWh, only increases while charging).",
+          "counter_epoch": "Change only when the counter is replaced or reset; a change blocks until resolved.",
+          "liveness_entity": "A sensor of the same device link that is reported continuously (e.g. a power reading); proves the SOC and counter are current.",
+          "hdo_relay_entity": "Measured tariff relay: on = off-peak now.",
+          "hdo_schedule_entity": "Sensor with a `schedule` attribute (list of start, end and tariff NT or VT) and `last_update`.",
+          "grid_charge_entity": "Inverter master switch for charging from the grid.",
+          "shadow_entity": "Writes happen only while this is explicitly off.",
+          "feature_entity": "Writes happen only while this is explicitly on.",
+          "slot1_start_entity": "Start of time-of-use slot 1 (HHMM number).",
+          "slot1_capacity_entity": "SOC floor and grid-charge target of slot 1 (%).",
+          "slot1_charge_enable_entity": "Grid charging permission of slot 1.",
+          "slot2_start_entity": "Start of time-of-use slot 2 (HHMM number).",
+          "slot2_capacity_entity": "SOC floor and grid-charge target of slot 2 (%).",
+          "slot2_charge_enable_entity": "Grid charging permission of slot 2.",
+          "slot3_start_entity": "Start of time-of-use slot 3 (HHMM number).",
+          "slot3_capacity_entity": "SOC floor and grid-charge target of slot 3 (%).",
+          "slot3_charge_enable_entity": "Grid charging permission of slot 3.",
+          "slot4_start_entity": "Start of time-of-use slot 4 (HHMM number).",
+          "slot4_capacity_entity": "SOC floor and grid-charge target of slot 4 (%).",
+          "slot4_charge_enable_entity": "Grid charging permission of slot 4.",
+          "slot5_start_entity": "Start of time-of-use slot 5 (HHMM number).",
+          "slot5_capacity_entity": "SOC floor and grid-charge target of slot 5 (%).",
+          "slot5_charge_enable_entity": "Grid charging permission of slot 5.",
+          "slot6_start_entity": "Start of time-of-use slot 6 (HHMM number).",
+          "slot6_capacity_entity": "SOC floor and grid-charge target of slot 6 (%).",
+          "slot6_charge_enable_entity": "Grid charging permission of slot 6."
+        }
+      }
+    },
+    "error": {
+      "invalid_mapping": "Incomplete mapping, an entity used for two written roles, or the same shadow and feature switch."
+    }
+  },
+  "entity": {
+    "sensor": {
+      "status": {
+        "name": "Status"
+      }
+    }
+  },
+  "services": {
+    "provision": {
+      "name": "Provision",
+      "description": "Start trusting the configured charge counter (once, after verifying it measures DC charge energy)."
+    },
+    "safety_stop": {
+      "name": "Safety stop",
+      "description": "Turn grid charging off now (live mode only); preempts any running sequence."
+    }
+  }
+}

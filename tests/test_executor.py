@@ -169,6 +169,15 @@ async def test_live_cycle_prepares_then_enables_with_confirmed_readback(storage_
     assert state.pending_step is None
 
 
+async def test_enable_uses_slot_starts_read_from_the_inverter(storage_hass, inverter):
+    executor = await _executor(storage_hass)
+    starts = (time(0), time(1), time(2), time(3), time(4), time(23))  # 22:15 → slot index 4
+    report = await executor.async_cycle(replace(_snapshot(), slot_starts=starts))
+    assert report.step_outcome == "confirmed"
+    assert inverter.value(CES[4]) == "on"
+    assert inverter.value(CES[NIGHT_SLOT]) == "off"
+
+
 async def test_rejected_enable_is_failed_and_cleaned_up(storage_hass, inverter):
     inverter.reject.add((GRID, True))
     executor = await _executor(storage_hass)

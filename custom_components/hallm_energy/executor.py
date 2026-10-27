@@ -9,7 +9,8 @@ its writes and aborts — then writes `grid_charge` off and every slot
 Writes happen only when the gates are explicitly live (shadow switched off
 AND the feature switched on, both readable). Otherwise every intended write
 is only reported, nothing is written, and an enabling proposal is not
-persisted (no pending step that nobody will execute).
+persisted (no pending step that nobody will execute). The only exception is
+`async_release`: leaving live mode turns charging off once.
 """
 
 from __future__ import annotations
@@ -49,6 +50,7 @@ class Snapshot:
     reading: CounterReading
     reading_epoch: str
     is_nt: Callable[[datetime], bool]
+    slot_starts: tuple[time, ...] | None = None  # read from the inverter; None = defaults
 
 
 class Gates:
@@ -108,6 +110,15 @@ class GrantExecutor:
         self.safety_revision += 1
         if not self.gates.live():
             return []
+        return await self._stop()
+
+    async def async_release(self) -> list[WriteResult]:
+        """Stop when leaving live mode (gates just closed, unload): the one
+        write that ignores the gates — it only ever turns charging off."""
+        self.safety_revision += 1
+        return await self._stop()
+
+    async def _stop(self) -> list[WriteResult]:
         results = []
         for op in stop_ops(self.entities):  # every op attempted even if one fails
             async with self._write_lock:
@@ -176,8 +187,11 @@ class GrantExecutor:
     def _enable_ops(self, state: StoreState, snapshot: Snapshot) -> list[Op]:
         active = state.active_grant
         assert active is not None
-        slot = current_slot(self.entities, snapshot.local_time)
-        return enable_ops(self.entities, slot, active.identity.target_pct)
+        entities = self.entities
+        if snapshot.slot_starts is not None:
+            entities = replace(entities, slot_starts=snapshot.slot_starts)
+        slot = current_slot(entities, snapshot.local_time)
+        return enable_ops(entities, slot, active.identity.target_pct)
 
     async def _enable(self, step_id: str, rev: int, snapshot: Snapshot,
                       report: CycleReport) -> None:
