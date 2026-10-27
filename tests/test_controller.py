@@ -3,6 +3,7 @@ provisioning, startup reconcile, leaving live mode, external switch-off."""
 
 from __future__ import annotations
 
+from datetime import timedelta
 from unittest.mock import patch
 
 import pytest
@@ -241,3 +242,52 @@ async def test_reprovision_refused_while_a_grant_is_active(storage_hass, inverte
     controller = await _controller(storage_hass, set_reconcile(activated(), "ready", None))
     with pytest.raises(ProvisionError):
         await controller.async_provision(again=True)
+
+
+# --- recovery in the loop (shadow) -----------------------------------------------------
+
+
+async def test_shadow_recovery_creates_grant_but_writes_nothing(storage_hass, inverter):
+    storage_hass.states.async_set("sensor.bms_soc", "13.0")
+    controller = await _controller(storage_hass, empty_state(), live=False)
+    status = await controller.async_tick()
+    state = controller.runtime.state
+    assert status.recovery.action == "grant_prepared"
+    assert status.recovery.pv_blocker == "profile_missing"  # no profile: conservative
+    assert state.recovery.state == "grid_recovery"
+    assert state.active_grant.identity.target_pct == 25
+    assert status.intents  # preparation reported
+    assert inverter.calls == []
+
+
+async def test_recovery_waits_for_pv_with_a_usable_profile(storage_hass, inverter):
+    import json as _json
+
+    from custom_components.hallm_energy.config import EnergyConfig
+    from tests.test_inputs import OPTIONS
+    from tests.test_recovery_flow import _profile
+
+    storage_hass.states.async_set("sensor.bms_soc", "13.0")
+    first = NOW.replace(hour=0, minute=0)
+    storage_hass.states.async_set("sensor.pv", "0", {
+        f"profile_{day}_{kind}": (
+            [(first + timedelta(days=i, minutes=15 * k)).isoformat() for k in range(96)]
+            if kind == "timestamps" else [8000 if 32 <= k < 56 else 0 for k in range(96)])
+        for i, day in enumerate(("today", "tomorrow")) for kind in ("timestamps", "w")})
+    controller = await _controller(storage_hass, empty_state(), live=False)
+    controller.config = EnergyConfig.from_options({**OPTIONS, "pv_forecast_entity": "sensor.pv"})
+    controller.profiles.handle(_json.dumps(_profile(now=NOW).to_dict()), NOW)
+    status = await controller.async_tick()
+    assert status.recovery.action == "entered" and status.recovery.pv_blocker is None
+    assert controller.runtime.state.recovery.state == "wait_pv"
+    assert controller.runtime.state.active_grant is None
+
+
+async def test_configured_budget_factor_reaches_executor_and_reconcile(storage_hass, inverter):
+    from custom_components.hallm_energy.config import EnergyConfig
+    from tests.test_inputs import OPTIONS
+
+    runtime_config = EnergyConfig.from_options({**OPTIONS, "budget_factor": 1.1})
+    controller = await _controller(storage_hass, empty_state())
+    rebuilt = EnergyController(storage_hass, controller.runtime, runtime_config, io=controller.io)
+    assert rebuilt.executor.budget_factor == 1.1

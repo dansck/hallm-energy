@@ -170,3 +170,76 @@ def _is_nt(hass: HomeAssistant, config: EnergyConfig, now: datetime,
         )
 
     return is_nt
+
+
+# --- recovery inputs -----------------------------------------------------------------
+
+PLANNING_HORIZON = timedelta(hours=48)
+FORECAST_STEP = timedelta(minutes=15)
+
+
+def offpeak_steps(intervals: tuple[Interval, ...] | None, now: datetime,
+                  horizon: timedelta = PLANNING_HORIZON) -> tuple[datetime, ...]:
+    """Future 15-minute step starts lying wholly in an off-peak interval of
+    the schedule (not vouched for by the relay — `is_nt` checks that live)."""
+    if not intervals:
+        return ()
+    t = now - timedelta(minutes=now.minute % 15, seconds=now.second,
+                        microseconds=now.microsecond)
+    if t < now:
+        t += FORECAST_STEP
+    end = now + horizon
+    steps = []
+    while t < end:
+        if schedule_nt(intervals, t) is True and schedule_nt(intervals, t + FORECAST_STEP
+                                                             - timedelta(seconds=1)) is True:
+            steps.append(t)
+        t += FORECAST_STEP
+    return tuple(steps)
+
+
+def schedule_intervals(hass: HomeAssistant, config: EnergyConfig,
+                       now: datetime) -> tuple[Interval, ...] | None:
+    state = hass.states.get(config.hdo_schedule_entity)
+    if not _usable(state):
+        return None
+    updated = _aware(state.attributes.get("last_update"))
+    if updated is None or now - updated > SCHEDULE_MAX_AGE:
+        return None
+    return parse_schedule(state.attributes.get("schedule"))
+
+
+def pv_forecast(hass: HomeAssistant, config: EnergyConfig,
+                now: datetime) -> Callable[[datetime], float] | None:
+    """Corrected PV forecast in kW AC (`pv_correction` applied exactly once).
+    Expects `profile_today_*`/`profile_tomorrow_*` lists (offset-aware
+    timestamps, W per 15 minutes) that cover `now`; otherwise unusable
+    (`None`). Beyond the forecast: 0 kW (nothing is credited)."""
+    if config.pv_forecast_entity is None:
+        return None
+    state = hass.states.get(config.pv_forecast_entity)
+    if state is None:
+        return None
+    values: dict[datetime, float] = {}
+    for day in ("today", "tomorrow"):
+        stamps = state.attributes.get(f"profile_{day}_timestamps")
+        watts = state.attributes.get(f"profile_{day}_w")
+        if not isinstance(stamps, list) or not isinstance(watts, list) \
+                or len(stamps) != len(watts):
+            return None
+        for stamp, w in zip(stamps, watts, strict=True):
+            t = _aware(stamp)
+            if t is None or isinstance(w, bool) or not isinstance(w, int | float) \
+                    or not math.isfinite(w) or w < 0:
+                return None
+            values[t.astimezone(dt_util.UTC)] = w / 1000
+    if not values or not min(values) <= now < max(values) + FORECAST_STEP:
+        return None
+    correction = config.pv_correction
+
+    def pv(t: datetime) -> float:
+        start = t - timedelta(minutes=t.minute % 15, seconds=t.second,
+                              microseconds=t.microsecond)
+        return values.get(start.astimezone(dt_util.UTC), 0.0) * correction
+
+    return pv

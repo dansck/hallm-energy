@@ -55,6 +55,8 @@ class StatusSensor(SensorEntity):
             return "reconcile_required"
         if state.active_grant is not None:
             return f"grant_{state.active_grant.status}"
+        if state.recovery is not None:
+            return "recovery_wait_pv"
         return "idle"
 
     @property
@@ -75,6 +77,14 @@ class StatusSensor(SensorEntity):
             }
             if state.counter_state is not None:
                 attrs["counter_last_trusted_kwh"] = state.counter_state.last_trusted_raw_dc_kwh
+            recovery = state.recovery
+            if recovery is not None:
+                attrs |= {
+                    "recovery_state": recovery.state,
+                    "recovery_entered_at": recovery.entered_at.isoformat(),
+                    "recovery_wait_until": recovery.wait_until.isoformat(),
+                    "recovery_reason": recovery.reason_code,
+                }
             grant = state.active_grant
             if grant is not None:
                 attrs |= {
@@ -98,5 +108,19 @@ class StatusSensor(SensorEntity):
                 "intents": [f"{op.entity_id}={op.value}" for op in tick.intents],
                 "writes": [f"{w.op.entity_id}={w.op.value}:{w.outcome}" for w in tick.writes],
                 "last_error": tick.error,
+                "recovery_action": None if tick.recovery is None else tick.recovery.action,
+                "recovery_action_reason": None if tick.recovery is None
+                else tick.recovery.reason,
+                "pv_not_credited_because": None if tick.recovery is None
+                else tick.recovery.pv_blocker,
+            }
+            profile = controller.profiles.profile
+            attrs |= {
+                "profile_generated_at": None if profile is None
+                else profile.generated_at.isoformat(),
+                "profile_valid_until": None if profile is None
+                else profile.valid_until.isoformat(),
+                "profile_quality": None if profile is None else profile.quality.status,
+                "profile_error": controller.profiles.error,
             }
         return attrs

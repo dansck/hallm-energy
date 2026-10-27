@@ -10,7 +10,8 @@ Each tick:
    back through reconcile (it becomes `paused`, with an audit event);
 5. while reconcile is not `ready`, reconciles against the read-only snapshot
    (stopping first if required, persisting second);
-6. otherwise runs one executor cycle.
+6. otherwise plans recovery (`recovery_flow`: episode, decision, grant —
+   persisted before anything enables) and runs one executor cycle.
 
 The safety stop service does not take the tick lock — it preempts.
 """
@@ -20,19 +21,23 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime
+from uuid import uuid4
 
 from homeassistant.core import HomeAssistant
 from homeassistant.util import dt as dt_util
 
 from .config import EnergyConfig
+from .const import POLICY_VERSION
 from .device_io import DeviceIO, WriteResult
 from .executor import Gates, GrantExecutor, Snapshot
-from .inputs import build_inputs
+from .inputs import build_inputs, offpeak_steps, pv_forecast, schedule_intervals
 from .lifecycle import GrantTransitionError, provision, reconcile, reprovision, set_reconcile
+from .profile_receiver import ProfileReceiver
+from .recovery_flow import RecoveryInputs, RecoveryOutcome, plan_recovery
 from .runtime import EnergyRuntime
-from .slot_plan import Op, Readback, stop_ops
+from .slot_plan import Op, Readback, current_slot, stop_ops
 from .state_schema import StoreState
 from .store import StoreNotDurableError
 
@@ -55,6 +60,7 @@ class TickStatus:
     intents: list[Op] = field(default_factory=list)
     writes: list[WriteResult] = field(default_factory=list)
     error: str | None = None
+    recovery: RecoveryOutcome | None = None
 
 
 class EnergyController:
@@ -72,8 +78,10 @@ class EnergyController:
         self.io = io or DeviceIO(hass)
         self.gates = Gates(hass, shadow_entity=config.shadow_entity,
                            feature_entity=config.feature_entity)
-        self.executor = GrantExecutor(runtime, self.io, config.slot_entities, self.gates)
+        self.executor = GrantExecutor(runtime, self.io, config.slot_entities, self.gates,
+                                      budget_factor=config.budget_factor)
         self.status = TickStatus()
+        self.profiles = ProfileReceiver()
         self._lock = asyncio.Lock()
         self._was_live = False
         self._listeners: list[Callable[[], None]] = []
@@ -173,12 +181,40 @@ class EnergyController:
             if runtime.state.reconcile_state.value != "ready":
                 return
 
+        if not await self._plan_recovery(snapshot, readback, status):
+            return
         report = await self.executor.async_cycle(snapshot)
         status.result = "cycle"
         status.reason = report.reason
         status.intents += report.intents
         status.writes += report.writes
         status.error = report.error
+
+    async def _plan_recovery(self, snapshot: Snapshot, readback: Readback,
+                             status: TickStatus) -> bool:
+        params = self.config.recovery
+        if params is None:
+            return True
+        floor = None
+        if snapshot.slot_starts is not None:
+            entities = replace(self.config.slot_entities, slot_starts=snapshot.slot_starts)
+            floor = readback.slot_capacity[current_slot(entities, snapshot.local_time)]
+        now = snapshot.now
+        inputs = RecoveryInputs(
+            now=now,
+            soc_pct=snapshot.soc_pct if snapshot.telemetry_valid else None,
+            current_floor_pct=floor,
+            reading=snapshot.reading,
+            reading_epoch=snapshot.reading_epoch,
+            pv_ac_kw=pv_forecast(self.hass, self.config, now),
+            profile=self.profiles.profile,
+            nt_steps=offpeak_steps(schedule_intervals(self.hass, self.config, now), now),
+        )
+        state = self.runtime.state
+        new_state, outcome = plan_recovery(state, inputs, params, new_id=lambda: uuid4().hex,
+                                           policy_version=POLICY_VERSION)
+        status.recovery = outcome
+        return new_state == state or await self._commit(new_state, status)
 
     async def _reconcile(self, snapshot: Snapshot, readback: Readback,
                          status: TickStatus) -> None:
@@ -189,6 +225,7 @@ class EnergyController:
             observed_charge_enable=readback.charging_enabled,
             reading=snapshot.reading,
             reading_epoch=snapshot.reading_epoch,
+            budget_factor=self.config.budget_factor,
         )
         status.result = f"reconcile:{result.state.reconcile_state.value}"
         status.reason = result.reason

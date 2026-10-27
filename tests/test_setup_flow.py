@@ -37,7 +37,10 @@ async def test_user_flow_creates_entry_with_mapping_in_options(storage_hass, inv
     result = await hass.config_entries.flow.async_configure(result["flow_id"], OPTIONS)
     assert result["type"] is FlowResultType.CREATE_ENTRY
     entry = result["result"]
-    assert dict(entry.options) == OPTIONS
+    from custom_components.hallm_energy.config import NUMBER_OPTIONS
+
+    defaults = {key: spec[0] for key, spec in NUMBER_OPTIONS.items()}
+    assert dict(entry.options) == {**OPTIONS, **defaults}
     await _settle(hass)
     assert hass.states.get(STATUS).state == "not_provisioned"
     assert hass.states.get(STATUS).attributes["live"] is False
@@ -102,6 +105,7 @@ async def test_invalid_mapping_is_reported_not_run(storage_hass, inverter):
 
 async def test_provision_service_then_idle(storage_hass, inverter):
     hass = storage_hass
+    hass.states.async_set("sensor.bms_soc", "50.0")  # above the reserve: nothing to recover
     entry = MockConfigEntry(domain=DOMAIN, options=OPTIONS)
     entry.add_to_hass(hass)
     assert await hass.config_entries.async_setup(entry.entry_id)
@@ -122,3 +126,29 @@ async def test_unload_removes_services(storage_hass, inverter):
     await _settle(hass)
     assert await hass.config_entries.async_unload(entry.entry_id)
     assert not hass.services.has_service(DOMAIN, "provision")
+
+
+# The MQTT client keeps a periodic housekeeping timer; with the frozen clock it
+# outlives the test (HA test harness check), it is not ours.
+@pytest.mark.parametrize("expected_lingering_timers", [True])
+async def test_house_load_profile_arrives_over_mqtt(storage_hass, inverter, mqtt_mock):
+    import json
+
+    from pytest_homeassistant_custom_component.common import async_fire_mqtt_message
+
+    from tests.test_recovery_flow import _profile
+
+    hass = storage_hass
+    entry = MockConfigEntry(domain=DOMAIN, options={**OPTIONS,
+                                                    "house_load_profile_topic": "test/profile"})
+    entry.add_to_hass(hass)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await _settle(hass)
+    profile = _profile(now=NOW)
+    async_fire_mqtt_message(hass, "test/profile", json.dumps(profile.to_dict()), retain=True)
+    await _settle(hass)
+    assert entry.runtime_data.controller.profiles.profile == profile
+    async_fire_mqtt_message(hass, "test/profile", "not json")
+    await _settle(hass)
+    assert entry.runtime_data.controller.profiles.error.startswith("invalid")
+    assert entry.runtime_data.controller.profiles.profile == profile

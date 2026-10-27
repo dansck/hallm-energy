@@ -23,7 +23,7 @@ from datetime import datetime, time
 from homeassistant.core import HomeAssistant
 
 from .device_io import DeviceIO, WriteResult
-from .energy_core.grant import CounterReading
+from .energy_core.grant import DEFAULT_GRANT_BUDGET_FACTOR, CounterReading
 from .lifecycle import confirm_closed, record_step_result, step_grant
 from .runtime import EnergyRuntime
 from .slot_plan import (
@@ -93,12 +93,14 @@ class GrantExecutor:
         gates: Gates,
         *,
         recheck: Callable[[], bool] | None = None,
+        budget_factor: float = DEFAULT_GRANT_BUDGET_FACTOR,
     ) -> None:
         self.runtime = runtime
         self.io = io
         self.entities = entities
         self.gates = gates
         self.recheck = recheck or (lambda: True)
+        self.budget_factor = budget_factor
         self.safety_revision = 0
         self._cycle_lock = asyncio.Lock()
         self._write_lock = asyncio.Lock()
@@ -159,6 +161,7 @@ class GrantExecutor:
                 deye_prepared=_prepared_for(state, readback),
                 safety_revision=rev,
                 observed_before={"grid_charge": readback.grid_charge},
+                budget_factor=self.budget_factor,
             )
             report.charge_enable, report.reason = result.charge_enable, result.reason
             new_state, step_id = result.state, result.step_id

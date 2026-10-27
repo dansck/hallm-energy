@@ -31,6 +31,8 @@ _PROVISIONING_STATES = ("uninitialized", "ready", "blocked")
 _GRANT_STATUSES = ("prepared", "active", "paused", "closing")
 _EPISODE_STATES = ("open", "closed")
 _RECONCILE_VALUES = ("required", "running", "ready", "blocked")
+RecoveryValue = Literal["wait_pv", "grid_recovery"]
+_RECOVERY_VALUES = ("wait_pv", "grid_recovery")
 _GRANT_PURPOSES = ("recovery", "econ")
 _OPERATION_STATUSES = ("sent", "confirmed", "unknown", "failed")
 
@@ -464,6 +466,45 @@ class PendingAuditEvent:
         )
 
 
+@dataclass(frozen=True)
+class RecoveryEpisode:
+    """One recovery episode below the reserve. `wait_until` is anchored on
+    entry and never moves; `grid_recovery` = its grant exists (same episode)."""
+
+    episode_id: str
+    entered_at: datetime
+    wait_until: datetime
+    state: RecoveryValue
+    decided_at: datetime
+    reason_code: str | None = None  # why PV could not be credited, or the grant could not start
+
+    def __post_init__(self) -> None:
+        if self.wait_until <= self.entered_at:
+            raise StoreStateError("recovery.wait_until musi byt po entered_at")
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "episode_id": self.episode_id,
+            "entered_at": _epoch(self.entered_at),
+            "wait_until": _epoch(self.wait_until),
+            "state": self.state,
+            "decided_at": _epoch(self.decided_at),
+            "reason_code": self.reason_code,
+        }
+
+    @staticmethod
+    def from_dict(raw: Any, where: str) -> RecoveryEpisode:
+        raw = _require_dict(raw, where)
+        return RecoveryEpisode(
+            episode_id=_require_str(raw.get("episode_id"), f"{where}.episode_id"),
+            entered_at=_parse_epoch(raw.get("entered_at"), f"{where}.entered_at"),
+            wait_until=_parse_epoch(raw.get("wait_until"), f"{where}.wait_until"),
+            state=_require_enum(raw.get("state"), _RECOVERY_VALUES, f"{where}.state"),
+            decided_at=_parse_epoch(raw.get("decided_at"), f"{where}.decided_at"),
+            reason_code=_require_optional_str(raw.get("reason_code"), f"{where}.reason_code"),
+        )
+
+
 # --- StoreState (root) -------------------------------------------------------------------
 
 
@@ -481,9 +522,11 @@ class StoreState:
     pending_step: PendingStep | None
     reconcile_state: ReconcileState
     pending_audit: tuple[PendingAuditEvent, ...]
+    recovery: RecoveryEpisode | None = None
 
     def __post_init__(self) -> None:
         self._validate_ledger()
+        self._validate_recovery()
         if self.provisioning_state == "ready" and self.counter_state is None:
             raise StoreStateError("provisioning ready vyzaduje overeny counter_state")
         open_episodes = [e for e in self.episode_ledger if e.state == "open"]
@@ -498,6 +541,22 @@ class StoreState:
                 raise StoreStateError("pending_step odkazuje na episode mimo ledger")
             return
         self._validate_active_grant(open_episodes)
+
+    def _validate_recovery(self) -> None:
+        recovery = self.recovery
+        grant = self.active_grant
+        if recovery is None:
+            return
+        if any(e.episode_id == recovery.episode_id and e.state == "closed"
+               for e in self.episode_ledger):
+            raise StoreStateError("recovery odkazuje na uzavrenou episode")
+        if recovery.state == "grid_recovery":
+            if grant is None or grant.identity.episode_id != recovery.episode_id:
+                raise StoreStateError("recovery grid_recovery vyzaduje grant teze episode")
+            if grant.identity.purpose != "recovery":
+                raise StoreStateError("recovery grant musi mit purpose recovery")
+        elif grant is not None:
+            raise StoreStateError("recovery wait_pv nesmi mit aktivni grant")
 
     def _validate_ledger(self) -> None:
         episode_ids = [e.episode_id for e in self.episode_ledger]
@@ -564,6 +623,7 @@ class StoreState:
             "pending_step": None if self.pending_step is None else self.pending_step.to_dict(),
             "reconcile_state": self.reconcile_state.to_dict(),
             "pending_audit": [e.to_dict() for e in self.pending_audit],
+            "recovery": None if self.recovery is None else self.recovery.to_dict(),
         }
 
 
@@ -590,6 +650,8 @@ def parse_store_state(raw: Any) -> StoreState:
     active_grant_raw = raw.get("active_grant")
     plan_cursor_raw = raw.get("plan_cursor")
     pending_step_raw = raw.get("pending_step")
+    # `recovery` arrived after the first v1 files: a missing key = no episode.
+    recovery_raw = raw.get("recovery")
     return StoreState(
         state_revision=_require_int(raw.get("state_revision"), "state_revision"),
         policy_version=_require_str(raw.get("policy_version"), "policy_version"),
@@ -613,4 +675,7 @@ def parse_store_state(raw: Any) -> StoreState:
         else PendingStep.from_dict(pending_step_raw, "pending_step"),
         reconcile_state=ReconcileState.from_dict(raw.get("reconcile_state"), "reconcile_state"),
         pending_audit=pending_audit,
+        recovery=None
+        if recovery_raw is None
+        else RecoveryEpisode.from_dict(recovery_raw, "recovery"),
     )

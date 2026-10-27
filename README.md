@@ -26,13 +26,21 @@ In place:
   battery SOC and charge counter (unknown/unavailable = invalid, so the
   device integration must not keep a stale value), slot starts read from the
   inverter, and off-peak only when the measured tariff relay AND a current
-  tariff schedule both say so.
+  tariff schedule both say so;
+- recovery below the reserve: an episode starts when SOC drops below the
+  reserve while the current slot floor is at least the reserve (a lower
+  floor means the battery may deliberately go lower). Waiting for PV is
+  decided by a step simulation of the corrected PV forecast minus the house
+  load profile until a deadline anchored at entry; PV is credited only with a
+  current, complete, good-quality profile. Otherwise a grid grant to the
+  recovery target is prepared over the next off-peak steps, one per episode;
+  an expired window is extended with the same identity and budget.
 
-Nothing creates grants yet; the loop keeps the stored state reconciled and,
-in live mode, turns grid charging off whenever no grant allows it.
+In shadow, grants are created and tracked like in live mode, but nothing is
+written to the inverter.
 
-Not implemented yet: grant creation, restoring normal floors after a grant,
-and the history outbox.
+Not implemented yet: restoring normal floors after a grant (floors stay
+raised to the target), and the history outbox.
 
 ## Configuration
 
@@ -46,6 +54,12 @@ entities (all of them can be changed later in the integration's options):
 | Grid charge master switch | switch |
 | Per slot (6): start (`HHMM`), capacity (%), charge enable | number, number, switch |
 | Shadow switch, feature switch | input booleans |
+| PV forecast (optional) | sensor with `profile_today_*` / `profile_tomorrow_*` attributes |
+| House load profile topic (optional) | retained MQTT topic |
+
+Recovery parameters (reserve, target, wait for PV, battery capacity and
+efficiency, PV correction, budget factor, …) have defaults and can be changed
+in the options.
 
 **Writes happen only while the shadow switch is explicitly `off` and the
 feature switch explicitly `on`.** Anything else (including unavailable) only

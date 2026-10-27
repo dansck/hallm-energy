@@ -1,12 +1,17 @@
 {
   "domain": "hallm_energy",
   "name": "Hallm Energy",
-  "codeowners": ["@dansck"],
+  "after_dependencies": [
+    "mqtt"
+  ],
+  "codeowners": [
+    "@dansck"
+  ],
   "config_flow": true,
   "documentation": "https://github.com/dansck/hallm-energy",
   "iot_class": "calculated",
   "issue_tracker": "https://github.com/dansck/hallm-energy/issues",
   "requirements": [],
   "single_config_entry": true,
-  "version": "20261027.9"
+  "version": "20261027.10"
 }

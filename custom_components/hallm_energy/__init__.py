@@ -23,6 +23,7 @@ from homeassistant.exceptions import (
 )
 from homeassistant.helpers.event import async_track_state_change_event, async_track_time_interval
 from homeassistant.helpers.service import async_register_admin_service
+from homeassistant.util import dt as dt_util
 
 from .config import ConfigInvalidError, EnergyConfig
 from .const import (
@@ -83,9 +84,30 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     if controller is not None:
+        await _subscribe_profile(hass, entry, controller)
         _start_loop(hass, entry, controller)
     _register_services(hass)
     return True
+
+
+async def _subscribe_profile(hass: HomeAssistant, entry: ConfigEntry,
+                             controller: EnergyController) -> None:
+    """Retained house load profile over MQTT. Without MQTT (or a topic) there
+    is no profile: PV is never credited and recovery stays conservative."""
+    topic = controller.config.profile_topic
+    if topic is None:
+        return
+    from homeassistant.components import mqtt
+
+    if not await mqtt.async_wait_for_mqtt_client(hass):
+        controller.profiles.error = "mqtt_unavailable"
+        return
+
+    @callback
+    def received(msg) -> None:
+        controller.profiles.handle(msg.payload, dt_util.utcnow())
+
+    entry.async_on_unload(await mqtt.async_subscribe(hass, topic, received, qos=1))
 
 
 def _start_loop(hass: HomeAssistant, entry: ConfigEntry, controller: EnergyController) -> None:

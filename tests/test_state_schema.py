@@ -94,7 +94,8 @@ def test_valid_snapshot_round_trips_through_json():
     state = parse_store_state(_raw())
     serialized = json.loads(json.dumps(state.to_dict()))
     assert parse_store_state(serialized) == state
-    assert serialized == _raw()
+    # files written before `recovery` existed parse unchanged; new writes carry the key
+    assert serialized == {**_raw(), "recovery": None}
 
 
 def test_real_payload_exceeds_input_text_limit_and_still_round_trips():
@@ -364,3 +365,40 @@ def test_parse_does_not_mutate_input():
 def test_non_mapping_root_rejected():
     with pytest.raises(StoreStateError):
         parse_store_state([])
+
+
+# --- recovery episode ---------------------------------------------------------------
+
+
+def _recovery(**over) -> dict:
+    raw = {"episode_id": "e1", "entered_at": T0, "wait_until": T0 + 36 * 3600,
+           "state": "grid_recovery", "decided_at": T0, "reason_code": None}
+    raw.update(over)
+    return raw
+
+
+def test_grid_recovery_episode_with_its_grant_round_trips():
+    state = parse_store_state(_raw(recovery=_recovery()))
+    assert state.recovery.state == "grid_recovery"
+    assert parse_store_state(json.loads(json.dumps(state.to_dict()))) == state
+
+
+def test_wait_pv_episode_without_grant_is_valid():
+    raw = _raw(active_grant=None, recovery=_recovery(episode_id="e2", state="wait_pv"))
+    raw["episode_ledger"] = raw["episode_ledger"][:1]
+    assert parse_store_state(raw).recovery.state == "wait_pv"
+
+
+@pytest.mark.parametrize(("over", "ledger_keep"), [
+    ({"recovery": _recovery(state="wait_pv")}, 2),                       # wait_pv + grant
+    ({"active_grant": None, "recovery": _recovery(episode_id="e2")}, 1),  # grid without grant
+    ({"recovery": _recovery(episode_id="other")}, 2),                    # grant of another episode
+    ({"active_grant": None, "recovery": _recovery(episode_id="e0", state="wait_pv")}, 1),  # closed
+    ({"recovery": _recovery(wait_until=T0)}, 2),                         # deadline not after entry
+    ({"recovery": _recovery(state="waiting")}, 2),
+])
+def test_inconsistent_recovery_is_rejected(over, ledger_keep):
+    raw = _raw(**over)
+    raw["episode_ledger"] = raw["episode_ledger"][:ledger_keep]
+    with pytest.raises(StoreStateError):
+        parse_store_state(raw)

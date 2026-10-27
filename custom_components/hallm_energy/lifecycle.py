@@ -494,7 +494,30 @@ def confirm_closed(state: StoreState, *, now: datetime) -> StoreState:
             "final_used_dc_kwh": active.usage.used_dc_kwh,
         },
     )
-    return _bump(state, active_grant=None, episode_ledger=ledger, pending_audit=audit)
+    recovery = state.recovery
+    if recovery is not None and recovery.episode_id == episode_id:
+        recovery = None  # the episode ends with its grant
+    return _bump(state, active_grant=None, episode_ledger=ledger, pending_audit=audit,
+                 recovery=recovery)
+
+
+def extend_window(state: StoreState, *, new_end: datetime, now: datetime) -> StoreState:
+    """The window ran out before the target: future off-peak steps for the
+    REMAINING budget, same episode/ID — budget and usage are never reset."""
+    active = state.active_grant
+    if active is None or active.status == "closing":
+        raise GrantTransitionError("only a prepared/active/paused grant can be extended")
+    if new_end <= now or new_end <= active.window.end:
+        raise GrantTransitionError("new window end must be in the future and later")
+    audit = _audit(state, f"{active.identity.grant_id}:window:{state.state_revision + 1}", {
+        "kind": "grant_window_extended",
+        "grant_id": active.identity.grant_id,
+        "episode_id": active.identity.episode_id,
+        "previous_end": int(active.window.end.timestamp()),
+        "new_end": int(new_end.timestamp()),
+    })
+    window = replace(active.window, end=new_end)
+    return _bump(state, active_grant=replace(active, window=window), pending_audit=audit)
 
 
 @dataclass(frozen=True)

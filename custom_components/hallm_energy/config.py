@@ -11,6 +11,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
 
+from .recovery_flow import RecoveryParams
 from .slot_plan import SlotEntities
 
 SLOT_COUNT = 6
@@ -23,6 +24,34 @@ CONF_HDO_SCHEDULE = "hdo_schedule_entity"
 CONF_GRID_CHARGE = "grid_charge_entity"
 CONF_SHADOW = "shadow_entity"
 CONF_FEATURE = "feature_entity"
+
+# Recovery inputs and parameters (optional; defaults below).
+CONF_PV_FORECAST = "pv_forecast_entity"
+CONF_PROFILE_TOPIC = "house_load_profile_topic"
+CONF_TOPOLOGY_EPOCH = "topology_epoch"
+CONF_PV_CORRECTION = "pv_correction"
+CONF_RESERVE = "reserve_pct"
+CONF_RECOVERY_TARGET = "recovery_target_pct"
+CONF_RECOVERY_WAIT = "recovery_pv_wait_h"
+CONF_BATTERY_KWH = "battery_capacity_kwh"
+CONF_ETA = "battery_efficiency"
+CONF_E_ERR_MORNING = "error_margin_morning_kwh"
+CONF_CHARGE_RATE = "grid_charge_rate_dc_kw"
+CONF_BUDGET_FACTOR = "budget_factor"
+
+# name: (default, minimum, maximum)
+NUMBER_OPTIONS: dict[str, tuple[float, float, float]] = {
+    CONF_RESERVE: (20.0, 10.0, 40.0),
+    CONF_RECOVERY_TARGET: (25.0, 15.0, 60.0),
+    CONF_RECOVERY_WAIT: (36.0, 0.0, 72.0),
+    CONF_PV_CORRECTION: (0.75, 0.3, 1.2),
+    CONF_BATTERY_KWH: (46.08, 1.0, 200.0),
+    CONF_ETA: (0.95, 0.5, 1.0),
+    CONF_E_ERR_MORNING: (2.0, 0.0, 10.0),
+    CONF_CHARGE_RATE: (1.0, 0.1, 20.0),
+    CONF_BUDGET_FACTOR: (1.25, 1.1, 1.5),
+    CONF_TOPOLOGY_EPOCH: (1, 1, 99),
+}
 
 
 def slot_key(kind: str, index: int) -> str:
@@ -61,6 +90,11 @@ class EnergyConfig:
     slot_start_entities: tuple[str, ...]
     slot_capacity_entities: tuple[str, ...]
     slot_charge_enable_entities: tuple[str, ...]
+    pv_forecast_entity: str | None = None
+    profile_topic: str | None = None
+    pv_correction: float = NUMBER_OPTIONS[CONF_PV_CORRECTION][0]
+    budget_factor: float = NUMBER_OPTIONS[CONF_BUDGET_FACTOR][0]
+    recovery: RecoveryParams | None = None
 
     @property
     def slot_entities(self) -> SlotEntities:
@@ -96,6 +130,20 @@ class EnergyConfig:
         def slots(kind: str) -> tuple[str, ...]:
             return tuple(options[slot_key(kind, i)] for i in range(1, SLOT_COUNT + 1))
 
+        numbers = {}
+        for key, (default, low, high) in NUMBER_OPTIONS.items():
+            value = options.get(key, default)
+            if isinstance(value, bool) or not isinstance(value, int | float) \
+                    or not low <= value <= high:
+                raise ConfigInvalidError(f"{key}: expected a number in [{low}, {high}]")
+            numbers[key] = float(value)
+        if numbers[CONF_RECOVERY_TARGET] < numbers[CONF_RESERVE] + 5:
+            raise ConfigInvalidError("recovery target must be at least reserve + 5")
+        topic = options.get(CONF_PROFILE_TOPIC) or None
+        if topic is not None and (not isinstance(topic, str) or "#" in topic or "+" in topic):
+            raise ConfigInvalidError("house load profile topic must be a plain MQTT topic")
+        pv_entity = options.get(CONF_PV_FORECAST) or None
+
         return EnergyConfig(
             soc_entity=options[CONF_SOC],
             counter_entity=options[CONF_COUNTER],
@@ -108,4 +156,19 @@ class EnergyConfig:
             slot_start_entities=slots("start"),
             slot_capacity_entities=slots("capacity"),
             slot_charge_enable_entities=slots("charge_enable"),
+            pv_forecast_entity=pv_entity,
+            profile_topic=topic,
+            pv_correction=numbers[CONF_PV_CORRECTION],
+            budget_factor=numbers[CONF_BUDGET_FACTOR],
+            recovery=RecoveryParams(
+                reserve_pct=numbers[CONF_RESERVE],
+                recovery_target_pct=numbers[CONF_RECOVERY_TARGET],
+                recovery_pv_wait_h=numbers[CONF_RECOVERY_WAIT],
+                c_use_kwh=numbers[CONF_BATTERY_KWH],
+                eta_c=numbers[CONF_ETA],
+                eta_d=numbers[CONF_ETA],
+                e_err_morning_kwh=numbers[CONF_E_ERR_MORNING],
+                assumed_charge_rate_dc_kw=numbers[CONF_CHARGE_RATE],
+                topology_epoch=int(numbers[CONF_TOPOLOGY_EPOCH]),
+            ),
         )

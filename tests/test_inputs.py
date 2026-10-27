@@ -190,3 +190,65 @@ async def test_unavailable_slot_start_invalidates_telemetry(hass, at_now):
     set_telemetry(hass)
     hass.states.async_set("number.inv_slot3_start", "unavailable")
     assert build_inputs(hass, CONFIG, NOW).snapshot.telemetry_valid is False
+
+
+# --- recovery inputs -------------------------------------------------------------------
+
+from custom_components.hallm_energy.inputs import (  # noqa: E402
+    offpeak_steps,
+    pv_forecast,
+    schedule_intervals,
+)
+
+PV = "sensor.pv_forecast"
+PV_CONFIG = EnergyConfig.from_options({**OPTIONS, "pv_forecast_entity": PV, "pv_correction": 0.75})
+
+
+def _pv_state(hass, *, start=None, watts=4000, days=("today", "tomorrow")):
+    start = start or NOW.replace(hour=0, minute=0)
+    attrs = {}
+    for i, day in enumerate(days):
+        base = start + timedelta(days=i)
+        attrs[f"profile_{day}_timestamps"] = [
+            (base + timedelta(minutes=15 * k)).isoformat() for k in range(96)]
+        attrs[f"profile_{day}_w"] = [watts] * 96
+    hass.states.async_set(PV, "0.0", attrs)
+
+
+async def test_pv_forecast_applies_correction_exactly_once(hass):
+    _pv_state(hass)
+    pv = pv_forecast(hass, PV_CONFIG, NOW)
+    assert pv(NOW) == pytest.approx(4.0 * 0.75)
+    assert pv(NOW + timedelta(days=3)) == 0.0  # beyond the forecast nothing is credited
+
+
+async def test_pv_forecast_unusable_when_not_covering_now_or_invalid(hass):
+    _pv_state(hass, start=NOW.replace(hour=0, minute=0) + timedelta(days=3))
+    assert pv_forecast(hass, PV_CONFIG, NOW) is None
+    _pv_state(hass, watts=-5)
+    assert pv_forecast(hass, PV_CONFIG, NOW) is None
+    _pv_state(hass, days=("today",))
+    assert pv_forecast(hass, PV_CONFIG, NOW) is None  # tomorrow missing = malformed
+    assert pv_forecast(hass, CONFIG, NOW) is None  # no forecast entity configured
+
+
+async def test_offpeak_steps_only_whole_nt_steps(hass, at_now):
+    set_telemetry(hass)  # NT from NOW for 6 h, VT before
+    steps = offpeak_steps(schedule_intervals(hass, CONFIG, NOW), NOW)
+    assert steps[0] == NOW and len(steps) == 24
+    assert all(s >= NOW for s in steps)
+    half = NOW + timedelta(minutes=7)
+    assert offpeak_steps(schedule_intervals(hass, CONFIG, half), half)[0] == NOW + timedelta(
+        minutes=15)
+    assert offpeak_steps(None, NOW) == ()
+
+
+async def test_offpeak_step_cut_by_tariff_change_is_excluded(hass, at_now):
+    end = NOW + timedelta(hours=1, minutes=7)  # NT ends inside the 23:15 step
+    set_telemetry(hass, schedule=[
+        {"start": (NOW - timedelta(hours=1)).isoformat(), "end": end.isoformat(), "tariff": "NT"},
+        {"start": end.isoformat(), "end": (NOW + timedelta(hours=6)).isoformat(),
+         "tariff": "VT"},
+    ])
+    steps = offpeak_steps(schedule_intervals(hass, CONFIG, NOW), NOW)
+    assert steps == tuple(NOW + timedelta(minutes=15 * i) for i in range(4))
