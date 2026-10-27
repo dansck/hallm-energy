@@ -613,3 +613,53 @@ def test_after_reconcile_ready_enabling_still_goes_through_a_step():
                   reading=reading(7204.0, T0 + timedelta(minutes=45)))
     assert result.step_id is not None
     assert result.state.active_grant.status == "prepared"
+
+
+# --- reconcile: budget backup exhausted during downtime ----------------------------
+
+
+def test_reconcile_budget_exhausted_while_down_and_still_on_requires_off():
+    active = activated()
+    result = rec(on_startup(active), on=True, raw=7208.5, minutes=120)
+    assert result.state.active_grant.status == "closing"
+    assert result.state.active_grant.reason_code == "budget_exhausted"
+    assert result.require_charge_off is True
+    assert result.state.reconcile_state.value == "required"
+    assert result.state.active_grant.usage.used_dc_kwh == pytest.approx(4.5)  # not clipped
+    assert result.state.active_grant.identity.budget_dc_kwh == (
+        active.active_grant.identity.budget_dc_kwh
+    )
+
+    off = rec(result.state, on=False, raw=7208.5, minutes=121)
+    assert off.state.active_grant is None
+    entry = off.state.episode_ledger[-1]
+    assert (entry.state, entry.close_reason) == ("closed", "budget_exhausted")
+    assert entry.final_used_dc_kwh == pytest.approx(4.5)
+    assert off.state.reconcile_state.value == "ready"
+
+
+def test_reconcile_budget_exhausted_while_down_and_already_off_closes():
+    result = rec(on_startup(activated()), on=False, raw=7208.5, minutes=120)
+    assert result.state.active_grant is None
+    assert result.state.episode_ledger[-1].close_reason == "budget_exhausted"
+    assert result.require_charge_off is False
+
+
+@pytest.mark.parametrize("on", [True, False])
+def test_reconcile_budget_exhausted_with_unresolved_enable(on):
+    proposed = step(prepared()).state  # enable proposed, outcome never recorded
+    result = rec(on_startup(proposed), on=on, raw=7208.5, minutes=120)
+    assert result.state.pending_step is None
+    if on:
+        assert result.state.active_grant.status == "closing"
+        assert result.require_charge_off is True
+    else:
+        assert result.state.active_grant is None
+        assert result.state.episode_ledger[-1].close_reason == "budget_exhausted"
+        assert result.require_charge_off is False
+
+
+def test_reconcile_below_budget_backup_stays_active():
+    result = rec(on_startup(activated()), on=True, raw=7207.9, minutes=120)
+    assert result.state.active_grant.status == "active"
+    assert result.state.reconcile_state.value == "ready"

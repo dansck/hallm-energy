@@ -20,9 +20,9 @@ from homeassistant.core import HomeAssistant
 
 from .const import POLICY_VERSION
 from .energy_core import CORE_VERSION
-from .lifecycle import lost_state, new_installation_state, on_startup
+from .lifecycle import lost_state, new_installation_state, on_startup, set_reconcile
 from .state_schema import StoreState, StoreStateError, parse_store_state
-from .store import LocalStateStore, StoreLoadError
+from .store import LocalStateStore, StoreLoadError, StoreNotDurableError
 
 
 class RuntimeBlockedError(Exception):
@@ -35,6 +35,7 @@ class EnergyRuntime:
         self.store = store
         self.state: StoreState | None = None
         self.blocked_reason: str | None = None
+        self.persistence_fault: str | None = None
 
     async def async_start(
         self, *, known_installation_id: str | None, new_installation_id: Callable[[], str]
@@ -77,16 +78,43 @@ class EnergyRuntime:
         return state.installation_id
 
     async def async_commit(self, new_state: StoreState) -> None:
+        """Persist first, adopt second. A failed write sets `persistence_fault`,
+        which blocks every new enabling action until `async_verify_storage`
+        succeeds — a later successful write does not clear it. Stopping never
+        depends on this: callers command charging off without a commit."""
         if self.blocked_reason is not None:
             raise RuntimeBlockedError(self.blocked_reason)
-        await self.store.async_save(new_state.to_dict())
+        try:
+            await self.store.async_save(new_state.to_dict())
+        except StoreNotDurableError as exc:
+            self.persistence_fault = str(exc) or "state write failed"
+            raise
         self.state = new_state
+
+    async def async_verify_storage(self) -> bool:
+        """Explicit recovery after a persistence fault: a confirmed write of the
+        current state with reconcile required again (the old stored state is not
+        a new authorization). Clears the fault only on success."""
+        if self.blocked_reason is not None or self.state is None:
+            return False
+        candidate = self.state
+        if candidate.reconcile_state.value != "blocked":
+            candidate = set_reconcile(candidate, "required", "storage_recovered")
+        try:
+            await self.store.async_save(candidate.to_dict())
+        except StoreNotDurableError as exc:
+            self.persistence_fault = str(exc) or "state write failed"
+            return False
+        self.state = candidate
+        self.persistence_fault = None
+        return True
 
     @property
     def may_enable(self) -> bool:
         """Necessary (not sufficient) condition for any enabling action."""
         return (
             self.blocked_reason is None
+            and self.persistence_fault is None
             and self.state is not None
             and self.state.provisioning_state == "ready"
             and self.state.reconcile_state.value == "ready"

@@ -15,11 +15,11 @@ from uuid import uuid4
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
-from homeassistant.exceptions import ConfigEntryError
+from homeassistant.exceptions import ConfigEntryError, ConfigEntryNotReady
 
 from .const import CONF_INSTALLATION_ID, DOMAIN, STORAGE_KEY, STORAGE_VERSION
 from .runtime import EnergyRuntime
-from .store import LocalStateStore
+from .store import LocalStateStore, StoreNotDurableError
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -32,10 +32,13 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     runtime = EnergyRuntime(
         hass, LocalStateStore(hass, version=STORAGE_VERSION, key=STORAGE_KEY)
     )
-    installation_id = await runtime.async_start(
-        known_installation_id=entry.data.get(CONF_INSTALLATION_ID),
-        new_installation_id=lambda: uuid4().hex,
-    )
+    try:
+        installation_id = await runtime.async_start(
+            known_installation_id=entry.data.get(CONF_INSTALLATION_ID),
+            new_installation_id=lambda: uuid4().hex,
+        )
+    except StoreNotDurableError as exc:
+        raise ConfigEntryNotReady(f"state could not be persisted: {exc}") from exc
     # Marker after the Store write: a crash in between leaves a valid state
     # without a marker, which the next start adopts.
     if installation_id is not None and entry.data.get(CONF_INSTALLATION_ID) != installation_id:

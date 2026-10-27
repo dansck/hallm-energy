@@ -9,8 +9,10 @@ or a crash can't silently re-authorize energy that was already spent).
 
 In place, shadow only (nothing writes to any device yet):
 
-- durable local state via Home Assistant's own `Store` (fsynced writes, no
-  255-character `input_text` limit), validated as a whole on every load;
+- durable local state in Home Assistant's `.storage/` (fsynced atomic writes,
+  confirmed by reading back; no 255-character `input_text` limit), validated
+  as a whole on every load; a failed write blocks enabling until storage is
+  verified again;
 - grant lifecycle with an episode ledger: enabling is only proposed and
   becomes active after a confirmed write; stopping never waits;
 - startup: first run vs. lost state vs. restart, single installation, and a

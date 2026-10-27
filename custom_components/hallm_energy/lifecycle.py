@@ -31,6 +31,7 @@ from .energy_core.grant import (
     Grant,
     GrantIdentity,
     evaluate_grant,
+    grant_budget_exhausted,
     update_grant_used,
 )
 from .energy_core.grant import GrantWindow as CoreGrantWindow
@@ -317,17 +318,8 @@ def step_grant(
     audit = state.pending_audit
 
     if decision.close:
-        working = _with_status(working, "closing", decision.reason, now)
-        audit = _audit(
-            state,
-            f"{active.identity.grant_id}:closing",
-            {
-                "kind": "grant_closing",
-                "grant_id": active.identity.grant_id,
-                "reason": decision.reason,
-                "used_dc_kwh": usage.used_dc_kwh,
-            },
-        )
+        closing = _start_closing(replace(state, active_grant=working), decision.reason, now)
+        working, audit = closing.active_grant, closing.pending_audit
         charge, reason = False, decision.reason
     elif decision.charge_enable:
         blocker = _enable_blocker(state, deye_prepared)
@@ -475,6 +467,7 @@ def reconcile(
     observed_charge_enable: bool | None,
     reading: CounterReading | None,
     reading_epoch: str | None,
+    budget_factor: float = DEFAULT_GRANT_BUDGET_FACTOR,
     max_charge_rate_kw: float = DEFAULT_MAX_CHARGE_RATE_KW,
 ) -> ReconcileResult:
     """Compare the persisted state with a fresh read-only snapshot (actual
@@ -512,6 +505,12 @@ def reconcile(
             return finish(_paused(state, now, update.reason), "blocked", update.reason, on)
         working = replace(state, active_grant=replace(active, usage=usage),
                           counter_state=counter_state)
+        # Usage measured during downtime may already exhaust the budget backup:
+        # apply that documented stop before anything can be reported ready.
+        if active.status != "closing" and grant_budget_exhausted(
+            _core_grant(active), usage.used_dc_kwh, budget_factor
+        ):
+            working = _start_closing(working, "budget_exhausted", now)
     else:
         if (
             counter.last_trusted_raw_dc_kwh is not None
@@ -551,6 +550,25 @@ def reconcile(
     elif on:  # prepared/paused but physically charging
         return finish(working, "required", "unexpected_charge", True)
     return finish(working, "ready", None, False)
+
+
+def _start_closing(state: StoreState, reason: str | None, now: datetime) -> StoreState:
+    """Persist the stop intent: status `closing` plus a stable audit event."""
+    active = state.active_grant
+    assert active is not None
+    audit = _audit(
+        state,
+        f"{active.identity.grant_id}:closing",
+        {
+            "kind": "grant_closing",
+            "grant_id": active.identity.grant_id,
+            "reason": reason,
+            "used_dc_kwh": active.usage.used_dc_kwh,
+        },
+    )
+    return replace(
+        state, active_grant=_with_status(active, "closing", reason, now), pending_audit=audit
+    )
 
 
 def _paused(state: StoreState, now: datetime, reason: str | None) -> StoreState:
