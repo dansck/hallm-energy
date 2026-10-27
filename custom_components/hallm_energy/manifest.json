@@ -1,0 +1,11 @@
+{
+  "domain": "hallm_energy",
+  "name": "Hallm Energy",
+  "codeowners": ["@dansck"],
+  "config_flow": false,
+  "documentation": "https://github.com/dansck/hallm-energy",
+  "iot_class": "local_push",
+  "issue_tracker": "https://github.com/dansck/hallm-energy/issues",
+  "requirements": [],
+  "version": "20261027.1"
+}
