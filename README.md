@@ -7,11 +7,17 @@ or a crash can't silently re-authorize energy that was already spent).
 
 ## Status: early
 
-The installable shape (manifest, HACS metadata, CI/validation) and a real
-local persistence layer (`store.py`, a confirmed-write wrapper around Home
-Assistant's own `Store` — no 255-character `input_text` limit) are in place
-and loaded on setup. The actual grant decision logic, restart reconcile,
-safety limits and services are not implemented yet.
+In place, shadow only (nothing writes to any device yet):
+
+- durable local state via Home Assistant's own `Store` (fsynced writes, no
+  255-character `input_text` limit), validated as a whole on every load;
+- grant lifecycle with an episode ledger: enabling is only proposed and
+  becomes active after a confirmed write; stopping never waits;
+- startup: first run vs. lost state vs. restart, single installation, and a
+  mandatory reconcile against a read-only snapshot before anything enables.
+
+Not implemented yet: Home Assistant entities/services, the device adapter
+with real readback, safety limits, and the history outbox.
 
 ## Install
 
@@ -32,8 +38,3 @@ and the [HACS validation action](https://github.com/hacs/action) on every push.
 ## License
 
 [MIT](LICENSE)
-
-## Next implementation step
-
-Next: a validated state schema, episode ledger and shared pure core; then restart reconciliation in shadow mode.
-The existing Store wrapper does not implement grant accounting or authorize physical writes.

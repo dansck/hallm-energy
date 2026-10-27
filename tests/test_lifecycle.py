@@ -13,9 +13,14 @@ from custom_components.hallm_energy.energy_core.grant import (
 )
 from custom_components.hallm_energy.lifecycle import (
     GrantTransitionError,
+    ack_audit,
     confirm_closed,
+    lost_state,
+    new_installation_state,
     on_startup,
     prepare_grant,
+    provision,
+    reconcile,
     record_step_result,
     set_reconcile,
     step_grant,
@@ -448,3 +453,163 @@ def test_restart_mid_grant_requires_reconcile_and_keeps_remaining_claim():
     assert resumed.state.active_grant.identity.budget_dc_kwh == (
         active.active_grant.identity.budget_dc_kwh
     )
+
+
+# --- bootstrap / provisioning ---------------------------------------------------------
+
+def _fresh():
+    return new_installation_state(installation_id="inst-1", policy_version="p1", core_version="c1")
+
+
+def test_first_run_state_cannot_prepare_a_grant():
+    with pytest.raises(GrantTransitionError):
+        prepared(_fresh())
+
+
+def test_provision_requires_reconcile_before_anything_enables():
+    state = provision(_fresh(), counter_id=COUNTER, counter_epoch="e1",
+                      trusted_raw_dc_kwh=7204.0, at=T0)
+    assert state.provisioning_state == "ready"
+    assert state.reconcile_state == ReconcileState("required", "provisioned")
+    result = step(prepared(state))
+    assert result.charge_enable is False
+    assert result.reason == "reconcile_not_ready"
+
+
+def test_lost_state_cannot_be_provisioned_or_grant_recreated():
+    lost = lost_state(installation_id="inst-1", policy_version="p1", core_version="c1",
+                      reason="store_lost")
+    with pytest.raises(GrantTransitionError):
+        provision(lost, counter_id=COUNTER, counter_epoch="e1", trusted_raw_dc_kwh=0.0, at=T0)
+    with pytest.raises(GrantTransitionError):
+        prepared(lost)
+
+
+def test_startup_keeps_blocked():
+    blocked = set_reconcile(prepared(), "blocked", "counter_epoch_changed")
+    assert on_startup(blocked) is blocked
+
+
+def test_ack_audit_drops_only_acknowledged_events():
+    state = step(prepared(), soc_now_pct=25.0).state  # prepared + closing events
+    acked = ack_audit(state, {"g1:prepared"})
+    assert [e.event_id for e in acked.pending_audit] == ["g1:closing"]
+    assert ack_audit(acked, {"nope"}) is acked
+
+
+# --- reconcile ------------------------------------------------------------------------
+
+
+def rec(state, *, on, raw=7204.0, epoch="e1", minutes=30, available=True):
+    at = T0 + timedelta(minutes=minutes)
+    return reconcile(
+        state,
+        now=at,
+        observed_charge_enable=on,
+        reading=CounterReading(COUNTER, raw, at, available=available),
+        reading_epoch=epoch,
+    )
+
+
+def test_reconcile_confirms_pending_enable_from_readback_on():
+    proposed = step(prepared()).state
+    result = rec(on_startup(proposed), on=True)
+    assert result.reason is None
+    assert result.require_charge_off is False
+    assert result.state.reconcile_state.value == "ready"
+    assert result.state.active_grant.status == "active"
+    assert result.state.pending_step is None
+
+
+def test_reconcile_marks_pending_enable_failed_from_readback_off():
+    proposed = step(prepared()).state
+    result = rec(on_startup(proposed), on=False)
+    assert result.state.reconcile_state.value == "ready"
+    assert result.state.active_grant.status == "paused"
+    assert result.state.pending_step is None
+
+
+def test_reconcile_counts_charging_during_downtime_through_checkpoint():
+    active = activated()
+    result = rec(on_startup(active), on=True, raw=7206.5, minutes=60)
+    assert result.state.active_grant.usage.used_dc_kwh == pytest.approx(2.5)
+    assert result.state.active_grant.identity.budget_dc_kwh == (
+        active.active_grant.identity.budget_dc_kwh
+    )
+
+
+def test_reconcile_pauses_active_grant_when_readback_off():
+    result = rec(on_startup(activated()), on=False)
+    assert result.state.active_grant.status == "paused"
+    assert result.state.active_grant.reason_code == "readback_off"
+    assert result.state.reconcile_state.value == "ready"
+
+
+def test_reconcile_unexpected_charge_requires_off_and_not_ready():
+    result = rec(on_startup(prepared()), on=True)
+    assert result.require_charge_off is True
+    assert result.reason == "unexpected_charge"
+    assert result.state.reconcile_state.value == "required"
+
+
+def test_reconcile_charge_without_grant_requires_off():
+    closed = confirm_closed(step(activated(), soc_now_pct=25.0).state, now=T0 + timedelta(hours=1))
+    result = rec(on_startup(closed), on=True, minutes=90)
+    assert result.require_charge_off is True
+    assert result.reason == "charge_without_grant"
+
+
+def test_reconcile_closes_closing_grant_once_off_is_confirmed():
+    closing = step(activated(), soc_now_pct=25.0).state
+    still_on = rec(on_startup(closing), on=True)
+    assert still_on.require_charge_off is True
+    assert still_on.state.active_grant.status == "closing"
+    off = rec(still_on.state, on=False, minutes=31)
+    assert off.state.active_grant is None
+    assert off.state.episode_ledger[-1].state == "closed"
+    assert off.state.reconcile_state.value == "ready"
+
+
+def test_reconcile_counter_decrease_blocks_and_preserves_usage():
+    active = step(activated(), now=T0 + timedelta(minutes=30),
+                  reading=reading(7205.0, T0 + timedelta(minutes=30))).state
+    result = rec(on_startup(active), on=True, raw=12.0, minutes=60)
+    assert result.state.reconcile_state == ReconcileState("blocked", "counter_decreased")
+    assert result.require_charge_off is True
+    assert result.state.active_grant.status == "paused"
+    assert result.state.active_grant.usage.used_dc_kwh == pytest.approx(1.0)
+    assert result.state.active_grant.identity.checkpoint_dc_kwh == 7204.0
+
+
+def test_reconcile_counter_epoch_change_blocks():
+    result = rec(on_startup(activated()), on=False, epoch="e2")
+    assert result.state.reconcile_state == ReconcileState("blocked", "counter_epoch_changed")
+
+
+def test_reconcile_never_leaves_blocked_by_itself():
+    blocked = rec(on_startup(activated()), on=False, epoch="e2").state
+    again = rec(blocked, on=False)
+    assert again.state is blocked
+    assert again.state.reconcile_state.value == "blocked"
+
+
+@pytest.mark.parametrize(
+    "kwargs,reason",
+    [
+        ({"on": None}, "readback_unavailable"),
+        ({"on": False, "available": False}, "counter_unavailable"),
+    ],
+)
+def test_reconcile_without_fresh_inputs_stays_required(kwargs, reason):
+    result = rec(on_startup(activated()), **kwargs)
+    assert result.reason == reason
+    assert result.state.reconcile_state.value == "required"
+
+
+def test_after_reconcile_ready_enabling_still_goes_through_a_step():
+    reconciled = rec(on_startup(step(prepared(), is_nt=never_nt).state), on=False).state
+    assert reconciled.reconcile_state.value == "ready"
+    result = step(reconciled, now=T0 + timedelta(minutes=45),
+                  reading=reading(7204.0, T0 + timedelta(minutes=45)))
+    assert result.step_id is not None
+    assert result.state.active_grant.status == "prepared"

@@ -476,7 +476,7 @@ class StoreState:
     provisioning_state: ProvisioningState
     episode_ledger: tuple[EpisodeLedgerEntry, ...]
     active_grant: ActiveGrant | None
-    counter_state: CounterState
+    counter_state: CounterState | None  # None until provisioning verified the counter
     plan_cursor: PlanCursor | None
     pending_step: PendingStep | None
     reconcile_state: ReconcileState
@@ -484,6 +484,8 @@ class StoreState:
 
     def __post_init__(self) -> None:
         self._validate_ledger()
+        if self.provisioning_state == "ready" and self.counter_state is None:
+            raise StoreStateError("provisioning ready vyzaduje overeny counter_state")
         open_episodes = [e for e in self.episode_ledger if e.state == "open"]
         if self.active_grant is None:
             if open_episodes:
@@ -508,6 +510,8 @@ class StoreState:
     def _validate_active_grant(self, open_episodes: list[EpisodeLedgerEntry]) -> None:
         assert self.active_grant is not None
         identity = self.active_grant.identity
+        if self.counter_state is None:
+            raise StoreStateError("active_grant vyzaduje counter_state")
         if identity.counter_id != self.counter_state.counter_id:
             raise StoreStateError(
                 "active_grant.identity.counter_id neodpovida counter_state.counter_id"
@@ -555,7 +559,7 @@ class StoreState:
             "provisioning_state": self.provisioning_state,
             "episode_ledger": [e.to_dict() for e in self.episode_ledger],
             "active_grant": None if self.active_grant is None else self.active_grant.to_dict(),
-            "counter_state": self.counter_state.to_dict(),
+            "counter_state": None if self.counter_state is None else self.counter_state.to_dict(),
             "plan_cursor": None if self.plan_cursor is None else self.plan_cursor.to_dict(),
             "pending_step": None if self.pending_step is None else self.pending_step.to_dict(),
             "reconcile_state": self.reconcile_state.to_dict(),
@@ -581,6 +585,8 @@ def parse_store_state(raw: Any) -> StoreState:
         PendingAuditEvent.from_dict(e, f"pending_audit[{i}]")
         for i, e in enumerate(pending_audit_raw)
     )
+    if "counter_state" not in raw:
+        raise StoreStateError("counter_state: chybi (null je povolen jen explicitne)")
     active_grant_raw = raw.get("active_grant")
     plan_cursor_raw = raw.get("plan_cursor")
     pending_step_raw = raw.get("pending_step")
@@ -596,7 +602,9 @@ def parse_store_state(raw: Any) -> StoreState:
         active_grant=None
         if active_grant_raw is None
         else ActiveGrant.from_dict(active_grant_raw, "active_grant"),
-        counter_state=CounterState.from_dict(raw.get("counter_state"), "counter_state"),
+        counter_state=None
+        if raw["counter_state"] is None
+        else CounterState.from_dict(raw["counter_state"], "counter_state"),
         plan_cursor=None
         if plan_cursor_raw is None
         else PlanCursor.from_dict(plan_cursor_raw, "plan_cursor"),

@@ -24,6 +24,7 @@ from datetime import datetime
 from typing import Any
 
 from .energy_core.grant import (
+    COUNTER_STEP_TOLERANCE_KWH,
     DEFAULT_GRANT_BUDGET_FACTOR,
     DEFAULT_MAX_CHARGE_RATE_KW,
     CounterReading,
@@ -103,8 +104,83 @@ def set_reconcile(state: StoreState, value: ReconcileValue, reason_code: str | N
 
 def on_startup(state: StoreState) -> StoreState:
     """A persisted `ready`/`active` is no proof after a restart: reconcile is
-    always required before normal actions resume."""
+    always required before normal actions resume. A `blocked` state stays
+    blocked — a restart is not a way out of it."""
+    if state.reconcile_state.value == "blocked":
+        return state
     return set_reconcile(state, "required", "startup")
+
+
+def new_installation_state(
+    *, installation_id: str, policy_version: str, core_version: str
+) -> StoreState:
+    """Genuine first run: nothing is authorized until explicit provisioning."""
+    return StoreState(
+        state_revision=0,
+        policy_version=policy_version,
+        core_version=core_version,
+        installation_id=installation_id,
+        provisioning_state="uninitialized",
+        episode_ledger=(),
+        active_grant=None,
+        counter_state=None,
+        plan_cursor=None,
+        pending_step=None,
+        reconcile_state=ReconcileState("required", "not_provisioned"),
+        pending_audit=(),
+    )
+
+
+def lost_state(
+    *, installation_id: str, policy_version: str, core_version: str, reason: str
+) -> StoreState:
+    """The installation existed but its state is gone (deleted, corrupt file
+    moved aside, …). Never treated as a first run: blocked, no grant can be
+    recreated from nothing; leaving it needs an explicit procedure."""
+    return replace(
+        new_installation_state(
+            installation_id=installation_id,
+            policy_version=policy_version,
+            core_version=core_version,
+        ),
+        provisioning_state="blocked",
+        reconcile_state=ReconcileState("blocked", reason),
+    )
+
+
+def provision(
+    state: StoreState,
+    *,
+    counter_id: str,
+    counter_epoch: str,
+    trusted_raw_dc_kwh: float,
+    at: datetime,
+) -> StoreState:
+    """`uninitialized` → `ready` after a read-only inventory verified the
+    charge counter. Reconcile is still required before anything enables."""
+    if state.provisioning_state != "uninitialized":
+        raise GrantTransitionError(f"cannot provision from {state.provisioning_state}")
+    if state.active_grant is not None:
+        raise GrantTransitionError("cannot provision with an active grant")
+    return _bump(
+        state,
+        provisioning_state="ready",
+        counter_state=CounterState(
+            counter_id=counter_id,
+            counter_epoch=counter_epoch,
+            last_trusted_raw_dc_kwh=trusted_raw_dc_kwh,
+            last_changed_at=at,
+        ),
+        reconcile_state=ReconcileState("required", "provisioned"),
+    )
+
+
+def ack_audit(state: StoreState, event_ids: set[str]) -> StoreState:
+    """Drop events only after the outbox durably took them over."""
+    remaining = tuple(e for e in state.pending_audit if e.event_id not in event_ids)
+    if remaining == state.pending_audit:
+        return state
+    return _bump(state, pending_audit=remaining)
 
 
 def prepare_grant(
@@ -225,13 +301,7 @@ def step_grant(
         return StepResult(_commit(state, candidate), False, "counter_epoch_changed")
 
     core = _core_grant(active)
-    update = update_grant_used(
-        core,
-        reading,
-        active.usage.used_dc_kwh,
-        active.usage.counter_changed_at,
-        max_charge_rate_kw=max_charge_rate_kw,
-    )
+    usage, counter_state, update = _apply_reading(state, active, reading, max_charge_rate_kw)
     decision = evaluate_grant(
         core,
         update.used_dc_kwh,
@@ -242,24 +312,6 @@ def step_grant(
         counter_trusted=update.trusted,
         counter_distrust_reason=update.reason,
         budget_factor=budget_factor,
-    )
-
-    usage = GrantUsage(
-        used_dc_kwh=update.used_dc_kwh,
-        counter_changed_at=update.at,
-        last_trusted_raw_dc_kwh=reading.raw_kwh
-        if update.trusted
-        else active.usage.last_trusted_raw_dc_kwh,
-    )
-    counter_state = (
-        CounterState(
-            counter_id=state.counter_state.counter_id,
-            counter_epoch=state.counter_state.counter_epoch,
-            last_trusted_raw_dc_kwh=reading.raw_kwh,
-            last_changed_at=update.at,
-        )
-        if update.trusted
-        else state.counter_state
     )
     working = replace(active, usage=usage)
     audit = state.pending_audit
@@ -404,6 +456,133 @@ def confirm_closed(state: StoreState, *, now: datetime) -> StoreState:
         },
     )
     return _bump(state, active_grant=None, episode_ledger=ledger, pending_audit=audit)
+
+
+@dataclass(frozen=True)
+class ReconcileResult:
+    """`reason` is None when reconciled `ready`. `require_charge_off` asks the
+    caller to command charging off (also when the readback is unavailable)."""
+
+    state: StoreState
+    require_charge_off: bool
+    reason: str | None
+
+
+def reconcile(
+    state: StoreState,
+    *,
+    now: datetime,
+    observed_charge_enable: bool | None,
+    reading: CounterReading | None,
+    reading_epoch: str | None,
+    max_charge_rate_kw: float = DEFAULT_MAX_CHARGE_RATE_KW,
+) -> ReconcileResult:
+    """Compare the persisted state with a fresh read-only snapshot (actual
+    charge enable setting + charge counter), update usage through the original
+    checkpoint, resolve a pending step from the readback, and only then mark
+    reconcile `ready`. Never authorizes charging itself."""
+    on = observed_charge_enable
+
+    def finish(candidate: StoreState, value: ReconcileValue, reason: str | None,
+               off: bool) -> ReconcileResult:
+        target = ReconcileState(value, None if value == "ready" else reason)
+        if candidate.reconcile_state != target:
+            candidate = replace(candidate, reconcile_state=target)
+        return ReconcileResult(_commit(state, candidate), off, target.reason_code)
+
+    if state.reconcile_state.value == "blocked":
+        return ReconcileResult(state, on is not False, state.reconcile_state.reason_code)
+    if on is None:
+        return finish(state, "required", "readback_unavailable", True)
+    if state.provisioning_state != "ready" or state.counter_state is None:
+        return finish(state, "required", "not_provisioned", on)
+    if reading is None or reading_epoch is None or not reading.available:
+        return finish(state, "required", "counter_unavailable", on)
+
+    counter = state.counter_state
+    active = state.active_grant
+    if reading_epoch != counter.counter_epoch or reading.counter_id != counter.counter_id:
+        return finish(_paused(state, now, "counter_epoch_changed"), "blocked",
+                      "counter_epoch_changed", on)
+
+    if active is not None:
+        usage, counter_state, update = _apply_reading(state, active, reading, max_charge_rate_kw)
+        if not update.trusted:
+            # decrease, implausible jump, … = continuity not proven
+            return finish(_paused(state, now, update.reason), "blocked", update.reason, on)
+        working = replace(state, active_grant=replace(active, usage=usage),
+                          counter_state=counter_state)
+    else:
+        if (
+            counter.last_trusted_raw_dc_kwh is not None
+            and reading.raw_kwh < counter.last_trusted_raw_dc_kwh - COUNTER_STEP_TOLERANCE_KWH
+        ):
+            return finish(state, "blocked", "counter_decreased", on)
+        working = state
+        if counter.last_trusted_raw_dc_kwh is None or (
+            reading.raw_kwh > counter.last_trusted_raw_dc_kwh + COUNTER_STEP_TOLERANCE_KWH
+        ):
+            working = replace(state, counter_state=replace(
+                counter, last_trusted_raw_dc_kwh=reading.raw_kwh, last_changed_at=reading.at))
+
+    step = working.pending_step
+    if step is not None:
+        if step.operation_order != ("charge_enable",):
+            return finish(working, "required", "pending_step_needs_resolution", on)
+        working = record_step_result(
+            working,
+            step_id=step.step_id,
+            operation="charge_enable",
+            outcome="confirmed" if on else "failed",
+            now=now,
+        )
+
+    active = working.active_grant
+    if active is None:
+        if on:
+            return finish(working, "required", "charge_without_grant", True)
+    elif active.status == "closing":
+        if on:
+            return finish(working, "required", "closing_stop_pending", True)
+        working = confirm_closed(working, now=now)
+    elif active.status == "active":
+        if not on:
+            working = _paused(working, now, "readback_off")
+    elif on:  # prepared/paused but physically charging
+        return finish(working, "required", "unexpected_charge", True)
+    return finish(working, "ready", None, False)
+
+
+def _paused(state: StoreState, now: datetime, reason: str | None) -> StoreState:
+    active = state.active_grant
+    if active is None or active.status != "active":
+        return state
+    return replace(state, active_grant=_with_status(active, "paused", reason, now))
+
+
+def _apply_reading(
+    state: StoreState, active: ActiveGrant, reading: CounterReading, max_charge_rate_kw: float
+) -> tuple[GrantUsage, CounterState | None, Any]:
+    update = update_grant_used(
+        _core_grant(active),
+        reading,
+        active.usage.used_dc_kwh,
+        active.usage.counter_changed_at,
+        max_charge_rate_kw=max_charge_rate_kw,
+    )
+    usage = GrantUsage(
+        used_dc_kwh=update.used_dc_kwh,
+        counter_changed_at=update.at,
+        last_trusted_raw_dc_kwh=reading.raw_kwh
+        if update.trusted
+        else active.usage.last_trusted_raw_dc_kwh,
+    )
+    counter_state = state.counter_state
+    if update.trusted and counter_state is not None:
+        counter_state = replace(
+            counter_state, last_trusted_raw_dc_kwh=reading.raw_kwh, last_changed_at=update.at
+        )
+    return usage, counter_state, update
 
 
 def _with_status(

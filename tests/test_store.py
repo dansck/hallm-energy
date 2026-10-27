@@ -6,7 +6,14 @@ since the whole point is confirmed behaviour of the real mechanism."""
 
 from __future__ import annotations
 
-from custom_components.hallm_energy.store import LocalStateStore
+import pytest
+from homeassistant.core import CoreState
+
+from custom_components.hallm_energy.store import (
+    LocalStateStore,
+    StoreLoadError,
+    StoreNotDurableError,
+)
 
 
 async def test_load_returns_none_when_nothing_saved_yet(hass):
@@ -35,6 +42,43 @@ async def test_save_overwrites_previous_value(hass):
     await store.async_save({"n": 1})
     await store.async_save({"n": 2})
     assert await store.async_load() == {"n": 2}
+
+
+async def test_uses_fsynced_atomic_writes(hass):
+    # hass_storage fakes the disk layer, so the fsync path itself is not run
+    # here; this pins that the wrapper asks Store for it.
+    store = LocalStateStore(hass, version=1, key="hallm_energy_test_atomic")
+    assert store._store._atomic_writes is True
+
+
+async def test_save_while_stopping_is_reported_not_durable(hass, hass_storage):
+    store = LocalStateStore(hass, version=1, key="hallm_energy_test_stopping")
+    hass.set_state(CoreState.stopping)
+    try:
+        with pytest.raises(StoreNotDurableError):
+            await store.async_save({"n": 1})
+    finally:
+        hass.set_state(CoreState.running)
+    assert "hallm_energy_test_stopping" not in hass_storage
+
+
+async def test_newer_stored_version_raises_load_error(hass, hass_storage):
+    hass_storage["hallm_energy_test_newer"] = {
+        "version": 5, "minor_version": 1, "key": "hallm_energy_test_newer", "data": {"x": 1}
+    }
+    store = LocalStateStore(hass, version=1, key="hallm_energy_test_newer")
+    with pytest.raises(StoreLoadError):
+        await store.async_load()
+
+
+async def test_older_version_without_migration_raises_load_error(hass, hass_storage):
+    hass_storage["hallm_energy_test_older"] = {
+        "version": 1, "minor_version": 1, "key": "hallm_energy_test_older", "data": {"x": 1}
+    }
+    store = LocalStateStore(hass, version=2, key="hallm_energy_test_older")
+    with pytest.raises(StoreLoadError):
+        await store.async_load()
+    assert hass_storage["hallm_energy_test_older"]["version"] == 1  # not rewritten
 
 
 async def test_different_keys_do_not_collide(hass):

@@ -1,33 +1,52 @@
 """Hallm Energy — manages grid-charging grants for a home battery via a
 single local authority.
 
-**SKELETON** — proves installability via HACS, the integration lifecycle
-(setup/unload), and real local persistence via `LocalStateStore` (see
-`store.py`) instead of mirroring state into an `input_text` entity. Grant
-decision logic, restart reconcile, safety limits and services are not
-implemented yet — `state` loaded here is only stashed for a later step to
-use, nothing currently reads or acts on it."""
+Current scope: lifecycle, validated local state (`state_schema.py`,
+`lifecycle.py`) persisted through `LocalStateStore`, startup reconcile gate.
+Shadow only — nothing here writes to any device yet.
+
+Only one installation is supported: the state lives under one global storage
+key, so a second config entry is refused rather than sharing that file."""
 
 from __future__ import annotations
 
 import logging
+from uuid import uuid4
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
+from homeassistant.exceptions import ConfigEntryError
 
-from .const import DOMAIN, STORAGE_KEY, STORAGE_VERSION
+from .const import CONF_INSTALLATION_ID, DOMAIN, STORAGE_KEY, STORAGE_VERSION
+from .runtime import EnergyRuntime
 from .store import LocalStateStore
 
 _LOGGER = logging.getLogger(__name__)
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
-    store = LocalStateStore(hass, version=STORAGE_VERSION, key=STORAGE_KEY)
-    state = await store.async_load()
-    hass.data.setdefault(DOMAIN, {})[entry.entry_id] = {"store": store, "state": state}
-    _LOGGER.info(
-        "%s: setup — local state %s", DOMAIN, "loaded" if state is not None else "empty (first run)"
+    domain_data = hass.data.setdefault(DOMAIN, {})
+    if any(entry_id != entry.entry_id for entry_id in domain_data):
+        raise ConfigEntryError("only one Hallm Energy installation is supported")
+
+    runtime = EnergyRuntime(
+        hass, LocalStateStore(hass, version=STORAGE_VERSION, key=STORAGE_KEY)
     )
+    installation_id = await runtime.async_start(
+        known_installation_id=entry.data.get(CONF_INSTALLATION_ID),
+        new_installation_id=lambda: uuid4().hex,
+    )
+    # Marker after the Store write: a crash in between leaves a valid state
+    # without a marker, which the next start adopts.
+    if installation_id is not None and entry.data.get(CONF_INSTALLATION_ID) != installation_id:
+        hass.config_entries.async_update_entry(
+            entry, data={**entry.data, CONF_INSTALLATION_ID: installation_id}
+        )
+    domain_data[entry.entry_id] = runtime
+    if runtime.blocked_reason is not None:
+        _LOGGER.error(
+            "%s: blocked (%s); stored state left untouched", DOMAIN, runtime.blocked_reason
+        )
     return True
 
 
