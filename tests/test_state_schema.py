@@ -169,8 +169,10 @@ def test_negative_state_revision_rejected():
 def test_used_above_budget_is_kept_not_clipped():
     raw = _raw()
     raw["active_grant"]["usage"]["used_dc_kwh"] = 4.0  # > budget 3.25, < 1.25 * budget
+    raw["active_grant"]["usage"]["last_trusted_raw_dc_kwh"] = 7208.0
     state = parse_store_state(raw)
     assert state.active_grant.usage.used_dc_kwh == 4.0
+    assert state.active_grant.identity.budget_dc_kwh == 3.25
 
 
 @pytest.mark.parametrize(
@@ -254,6 +256,99 @@ def test_pending_step_unknown_operation_rejected():
         "operation_order": ["charge_enable"],
         "safety_revision": 1,
         "operation_status": {"something_else": "sent"},
+    }
+    with pytest.raises(StoreStateError):
+        parse_store_state(_raw(pending_step=step))
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("budget_dc_kwh", 100.0),  # claim inflated against the ledger
+        ("grant_id", "g-other"),
+        ("purpose", "econ"),
+    ],
+)
+def test_grant_identity_must_match_its_ledger_episode(field, value):
+    raw = _raw()
+    raw["active_grant"]["identity"][field] = value
+    with pytest.raises(StoreStateError):
+        parse_store_state(raw)
+
+
+@pytest.mark.parametrize("target", [150.0, -1.0, 100.1])
+def test_target_outside_physical_soc_range_rejected(target):
+    raw = _raw()
+    raw["active_grant"]["identity"]["target_pct"] = target
+    with pytest.raises(StoreStateError):
+        parse_store_state(raw)
+
+
+def test_target_at_100_accepted():
+    raw = _raw()
+    raw["active_grant"]["identity"]["target_pct"] = 100.0
+    assert parse_store_state(raw).active_grant.identity.target_pct == 100.0
+
+
+def test_duplicate_episode_id_in_ledger_rejected():
+    raw = _raw()
+    raw["episode_ledger"][0]["episode_id"] = "e1"
+    with pytest.raises(StoreStateError):
+        parse_store_state(raw)
+
+
+def test_duplicate_grant_id_in_ledger_rejected():
+    raw = _raw()
+    raw["episode_ledger"][0]["original_grant_id"] = "g1"
+    with pytest.raises(StoreStateError):
+        parse_store_state(raw)
+
+
+def test_two_open_episodes_rejected():
+    raw = _raw()
+    raw["episode_ledger"][0].update(
+        state="open", final_used_dc_kwh=None, close_reason=None, close_at=None
+    )
+    with pytest.raises(StoreStateError):
+        parse_store_state(raw)
+
+
+def test_open_episode_without_active_grant_rejected():
+    with pytest.raises(StoreStateError):
+        parse_store_state(_raw(active_grant=None))
+
+
+def test_usage_inconsistent_with_counter_rejected():
+    raw = _raw()
+    raw["active_grant"]["usage"]["used_dc_kwh"] = 2.0  # raw still at checkpoint
+    with pytest.raises(StoreStateError):
+        parse_store_state(raw)
+
+
+def test_usage_within_counter_step_tolerance_accepted():
+    raw = _raw()
+    raw["active_grant"]["usage"]["used_dc_kwh"] = 1.0
+    raw["active_grant"]["usage"]["last_trusted_raw_dc_kwh"] = 7205.05
+    assert parse_store_state(raw).active_grant.usage.used_dc_kwh == 1.0
+
+
+def test_trusted_raw_below_checkpoint_rejected():
+    raw = _raw()
+    raw["active_grant"]["usage"]["last_trusted_raw_dc_kwh"] = 7200.0
+    with pytest.raises(StoreStateError):
+        parse_store_state(raw)
+
+
+def test_pending_step_for_another_grant_rejected():
+    step = {
+        "step_id": "s1",
+        "grant_id": "g-other",
+        "episode_id": "e1",
+        "observed_before": {},
+        "requested_changes": {},
+        "operation_order": ["charge_enable"],
+        "safety_revision": 1,
+        "operation_status": {},
     }
     with pytest.raises(StoreStateError):
         parse_store_state(_raw(pending_step=step))

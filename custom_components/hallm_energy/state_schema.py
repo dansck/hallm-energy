@@ -18,6 +18,8 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any, Literal
 
+from .energy_core.grant import COUNTER_STEP_TOLERANCE_KWH
+
 ProvisioningState = Literal["uninitialized", "ready", "blocked"]
 GrantStatus = Literal["prepared", "active", "paused", "closing"]
 EpisodeState = Literal["open", "closed"]
@@ -143,6 +145,11 @@ class ActiveGrantIdentity:
     counter_id: str
     counter_epoch: str
     checkpoint_dc_kwh: float
+
+    def __post_init__(self) -> None:
+        # Physical SOC range only; policy bounds are checked at authorization.
+        if not (0 <= self.target_pct <= 100):
+            raise StoreStateError(f"target_pct {self.target_pct} mimo fyzicky rozsah 0–100")
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -476,8 +483,30 @@ class StoreState:
     pending_audit: tuple[PendingAuditEvent, ...]
 
     def __post_init__(self) -> None:
+        self._validate_ledger()
+        open_episodes = [e for e in self.episode_ledger if e.state == "open"]
         if self.active_grant is None:
+            if open_episodes:
+                raise StoreStateError(
+                    f"episode '{open_episodes[0].episode_id}' je open, ale active_grant chybi"
+                )
+            if self.pending_step is not None and not any(
+                e.episode_id == self.pending_step.episode_id for e in self.episode_ledger
+            ):
+                raise StoreStateError("pending_step odkazuje na episode mimo ledger")
             return
+        self._validate_active_grant(open_episodes)
+
+    def _validate_ledger(self) -> None:
+        episode_ids = [e.episode_id for e in self.episode_ledger]
+        if len(episode_ids) != len(set(episode_ids)):
+            raise StoreStateError("episode_ledger: duplicitni episode_id")
+        grant_ids = [e.original_grant_id for e in self.episode_ledger]
+        if len(grant_ids) != len(set(grant_ids)):
+            raise StoreStateError("episode_ledger: duplicitni original_grant_id")
+
+    def _validate_active_grant(self, open_episodes: list[EpisodeLedgerEntry]) -> None:
+        assert self.active_grant is not None
         identity = self.active_grant.identity
         if identity.counter_id != self.counter_state.counter_id:
             raise StoreStateError(
@@ -487,18 +516,35 @@ class StoreState:
             raise StoreStateError(
                 "active_grant.identity.counter_epoch neodpovida counter_state.counter_epoch"
             )
-        matching_episode = next(
-            (e for e in self.episode_ledger if e.episode_id == identity.episode_id), None
-        )
-        if matching_episode is None:
+        if [e.episode_id for e in open_episodes] != [identity.episode_id]:
             raise StoreStateError(
-                f"active_grant.identity.episode_id '{identity.episode_id}'"
-                " nema odpovidajici zaznam v episode_ledger"
+                f"active_grant musi mit jako jedinou open episode '{identity.episode_id}'"
             )
-        if matching_episode.state != "open":
+        episode = open_episodes[0]
+        if episode.original_grant_id != identity.grant_id:
+            raise StoreStateError("active_grant.grant_id neodpovida original_grant_id v ledgeru")
+        if episode.purpose != identity.purpose:
+            raise StoreStateError("active_grant.purpose neodpovida purpose v ledgeru")
+        if not math.isclose(
+            episode.original_budget_dc_kwh, identity.budget_dc_kwh, rel_tol=0, abs_tol=1e-9
+        ):
             raise StoreStateError(
-                f"active_grant odkazuje na episode '{identity.episode_id}', ktera uz je closed"
+                "active_grant.budget_dc_kwh se lisi od original_budget_dc_kwh v ledgeru"
             )
+        usage = self.active_grant.usage
+        if usage.last_trusted_raw_dc_kwh is not None:
+            raw_used = usage.last_trusted_raw_dc_kwh - identity.checkpoint_dc_kwh
+            if raw_used < -COUNTER_STEP_TOLERANCE_KWH - 1e-9:
+                raise StoreStateError("usage.last_trusted_raw_dc_kwh je pod checkpointem")
+            if abs(usage.used_dc_kwh - raw_used) > COUNTER_STEP_TOLERANCE_KWH + 1e-9:
+                raise StoreStateError(
+                    "usage.used_dc_kwh neodpovida last_trusted_raw_dc_kwh − checkpoint"
+                )
+        step = self.pending_step
+        if step is not None and (
+            step.grant_id != identity.grant_id or step.episode_id != identity.episode_id
+        ):
+            raise StoreStateError("pending_step neodkazuje na aktivni grant")
 
     def to_dict(self) -> dict[str, Any]:
         return {

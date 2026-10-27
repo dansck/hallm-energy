@@ -6,8 +6,10 @@ accounting itself (usage from the charge counter, stop conditions) comes
 from the shared `energy_core.grant`; this module only maps it onto the
 persisted lifecycle:
 
-    (none) ─prepare_grant─▶ prepared ─step─▶ active ⇄ paused
-                                 └──────────┴─────────┴─step─▶ closing
+    (none) ─prepare_grant─▶ prepared
+    prepared/paused ─step (proposes pending_step)─▶ record_step_result(confirmed) ─▶ active
+    active ─step─▶ paused                (immediately, stopping never waits)
+    any open ─step─▶ closing             (target SOC or budget backup)
     closing ─confirm_closed─▶ closed episode in the ledger, active_grant = None
 
 `active` means "locally confirmed settings", not a guarantee of current
@@ -16,7 +18,7 @@ physical charging current.
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, replace
 from datetime import datetime
 from typing import Any
@@ -38,7 +40,9 @@ from .state_schema import (
     EpisodeLedgerEntry,
     GrantUsage,
     GrantWindow,
+    OperationStatus,
     PendingAuditEvent,
+    PendingStep,
     ReconcileState,
     ReconcileValue,
     StoreState,
@@ -52,9 +56,14 @@ class GrantTransitionError(ValueError):
 
 @dataclass(frozen=True)
 class StepResult:
+    """`charge_enable` is the desired setting now. `step_id` is set only when a
+    NEW enabling write must be executed (persist `state` first, then perform
+    the write, then `record_step_result`)."""
+
     state: StoreState
     charge_enable: bool
     reason: str | None
+    step_id: str | None = None
 
 
 def _bump(state: StoreState, **changes: Any) -> StoreState:
@@ -186,16 +195,22 @@ def step_grant(
     telemetry_valid: bool,
     is_nt: Callable[[datetime], bool],
     deye_prepared: bool,
+    safety_revision: int,
+    observed_before: Mapping[str, Any] | None = None,
     budget_factor: float = DEFAULT_GRANT_BUDGET_FACTOR,
     max_charge_rate_kw: float = DEFAULT_MAX_CHARGE_RATE_KW,
 ) -> StepResult:
-    """One evaluation cycle. Activation additionally requires reconcile `ready`
-    and confirmed inverter preparation; anything uncertain pauses."""
+    """One evaluation cycle. Enabling requires provisioning `ready`, reconcile
+    `ready` and confirmed inverter preparation, and only PROPOSES a step
+    (`StepResult.step_id`); the grant becomes `active` after
+    `record_step_result` confirms it. Anything uncertain pauses."""
     active = state.active_grant
     if active is None:
         return StepResult(state, False, "no_grant")
     if active.status == "closing":
         return StepResult(state, False, active.reason_code or "closing")
+    pending_step = state.pending_step
+    step_id: str | None = None
 
     if reading_epoch != active.identity.counter_epoch:
         # Counter reset/replacement or unproven continuity: keep checkpoint and
@@ -263,25 +278,96 @@ def step_grant(
         )
         charge, reason = False, decision.reason
     elif decision.charge_enable:
-        if state.reconcile_state.value != "ready":
-            charge, reason = False, "reconcile_not_ready"
-        elif not deye_prepared:
-            charge, reason = False, "deye_not_prepared"
-        else:
-            charge, reason = True, None
-        if charge:
-            working = _with_status(working, "active", None, now)
+        blocker = _enable_blocker(state, deye_prepared)
+        if blocker is not None:
+            charge, reason = False, blocker
+            if working.status == "active":
+                working = _with_status(working, "paused", reason, now)
         elif working.status == "active":
-            working = _with_status(working, "paused", reason, now)
+            charge, reason = True, None  # already confirmed on, no new write
+        elif pending_step is not None:
+            # An earlier enable has no recorded outcome: never resend blindly.
+            charge, reason = False, "pending_step_unresolved"
+        else:
+            # Proposal only: stays prepared/paused until the write is confirmed.
+            pending_step = PendingStep(
+                step_id=f"{active.identity.grant_id}:enable:{state.state_revision + 1}",
+                grant_id=active.identity.grant_id,
+                episode_id=active.identity.episode_id,
+                observed_before=dict(observed_before or {}),
+                requested_changes={"charge_enable": True},
+                operation_order=("charge_enable",),
+                safety_revision=safety_revision,
+                operation_status={},
+            )
+            charge, reason, step_id = True, None, pending_step.step_id
     else:
+        # Stopping never waits for confirmation.
         charge, reason = False, decision.reason
         if working.status == "active":
             working = _with_status(working, "paused", reason, now)
 
     candidate = replace(
-        state, active_grant=working, counter_state=counter_state, pending_audit=audit
+        state,
+        active_grant=working,
+        counter_state=counter_state,
+        pending_audit=audit,
+        pending_step=pending_step,
     )
-    return StepResult(_commit(state, candidate), charge, reason)
+    return StepResult(_commit(state, candidate), charge, reason, step_id)
+
+
+def _enable_blocker(state: StoreState, deye_prepared: bool) -> str | None:
+    """Conditions that must ALL hold before anything may enable charging;
+    provisioning and reconcile are independent of each other."""
+    if state.provisioning_state != "ready":
+        return f"provisioning_{state.provisioning_state}"
+    if state.reconcile_state.value != "ready":
+        return "reconcile_not_ready"
+    if not deye_prepared:
+        return "deye_not_prepared"
+    return None
+
+
+def record_step_result(
+    state: StoreState, *, step_id: str, operation: str, outcome: OperationStatus, now: datetime
+) -> StoreState:
+    """Record the outcome of one operation of the pending step. Only a
+    confirmed readback of every operation makes the grant `active`; `failed`
+    means definitely not applied; `unknown` keeps the step and requires
+    reconcile — it is never treated as applied."""
+    step = state.pending_step
+    if step is None or step.step_id != step_id:
+        raise GrantTransitionError(f"no pending step '{step_id}'")
+    if operation not in step.operation_order:
+        raise GrantTransitionError(f"step '{step_id}' has no operation '{operation}'")
+    statuses = {**step.operation_status, operation: outcome}
+    active = state.active_grant
+    open_grant = active is not None and active.status != "closing"
+
+    if outcome == "failed":
+        new_active = (
+            _with_status(active, "paused", f"{operation}_failed", now) if open_grant else active
+        )
+        return _bump(state, pending_step=None, active_grant=new_active)
+    if outcome == "unknown":
+        return _bump(
+            state,
+            pending_step=replace(step, operation_status=statuses),
+            reconcile_state=ReconcileState("required", "step_result_unknown"),
+        )
+    if outcome == "sent" or not all(statuses.get(op) == "confirmed" for op in step.operation_order):
+        return _commit(state, replace(state, pending_step=replace(step, operation_status=statuses)))
+
+    new_active = active
+    if open_grant and step.requested_changes.get("charge_enable") is True:
+        new_active = _with_status(active, "active", None, now)
+    audit = _audit(
+        state,
+        f"{step_id}:confirmed",
+        {"kind": "step_confirmed", "step_id": step_id, "grant_id": step.grant_id},
+    )
+    return _bump(state, pending_step=None, active_grant=new_active, pending_audit=audit)
 
 
 def confirm_closed(state: StoreState, *, now: datetime) -> StoreState:
@@ -290,6 +376,8 @@ def confirm_closed(state: StoreState, *, now: datetime) -> StoreState:
     active = state.active_grant
     if active is None or active.status != "closing":
         raise GrantTransitionError("only a closing grant can be confirmed closed")
+    if state.pending_step is not None:
+        raise GrantTransitionError("unresolved pending step — physical state unknown")
     episode_id = active.identity.episode_id
     ledger = tuple(
         replace(
