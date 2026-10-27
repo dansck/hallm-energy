@@ -3,9 +3,9 @@ unknown, unavailable, stale or contradictory makes the affected input invalid â€
 never a reason to enable.
 
 * Freshness: the SOC and the charge counter legitimately stay unchanged for a
-  long time (the counter only moves while charging), so their own timestamps
-  prove nothing. Freshness comes from a separate liveness entity of the same
-  device link that is reported continuously (e.g. a power reading).
+  long time (the counter only moves while charging), so their timestamps prove
+  nothing. The device integration must report them as unknown/unavailable
+  when its link fails (e.g. ESPHome publishing NaN); that is what is checked.
 * Off-peak (`is_nt`): the measured tariff relay AND a current tariff schedule
   must both say off-peak. The relay only describes "now", so `is_nt(t)` is
   false for any `t` farther than `RELAY_HORIZON` from the snapshot time.
@@ -28,7 +28,6 @@ from .config import EnergyConfig
 from .energy_core.grant import CounterReading
 from .executor import Snapshot
 
-LIVENESS_MAX_AGE = timedelta(minutes=3)
 SCHEDULE_MAX_AGE = timedelta(hours=36)
 RELAY_HORIZON = timedelta(minutes=5)
 
@@ -99,22 +98,15 @@ def build_inputs(hass: HomeAssistant, config: EnergyConfig, now: datetime) -> In
     problems: list[str] = []
     states = hass.states
 
-    liveness = states.get(config.liveness_entity)
-    live_link = _usable(liveness) and now - liveness.last_reported <= LIVENESS_MAX_AGE
-    if not live_link:
-        problems.append("device_link_stale")
-
     soc = _number(states.get(config.soc_entity))
     if soc is None or not 0 <= soc <= 100:
         problems.append("soc_unavailable")
         soc = None
-    elif not live_link:
-        soc = None
 
     counter_state = states.get(config.counter_entity)
     raw = _number(counter_state)
-    counter_ok = live_link and raw is not None and raw >= 0
-    if raw is None or raw < 0:
+    counter_ok = raw is not None and raw >= 0
+    if not counter_ok:
         problems.append("counter_unavailable")
     reading = CounterReading(
         counter_id=config.counter_entity,

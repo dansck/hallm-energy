@@ -18,7 +18,6 @@ SLOT_COUNT = 6
 CONF_SOC = "soc_entity"
 CONF_COUNTER = "counter_entity"
 CONF_COUNTER_EPOCH = "counter_epoch"
-CONF_LIVENESS = "liveness_entity"
 CONF_HDO_RELAY = "hdo_relay_entity"
 CONF_HDO_SCHEDULE = "hdo_schedule_entity"
 CONF_GRID_CHARGE = "grid_charge_entity"
@@ -35,7 +34,6 @@ SLOT_KINDS = ("start", "capacity", "charge_enable")
 SINGLE_KEYS = (
     CONF_SOC,
     CONF_COUNTER,
-    CONF_LIVENESS,
     CONF_HDO_RELAY,
     CONF_HDO_SCHEDULE,
     CONF_GRID_CHARGE,
@@ -55,7 +53,6 @@ class EnergyConfig:
     soc_entity: str
     counter_entity: str
     counter_epoch: str
-    liveness_entity: str
     hdo_relay_entity: str
     hdo_schedule_entity: str
     grid_charge_entity: str
@@ -103,7 +100,6 @@ class EnergyConfig:
             soc_entity=options[CONF_SOC],
             counter_entity=options[CONF_COUNTER],
             counter_epoch=epoch.strip(),
-            liveness_entity=options[CONF_LIVENESS],
             hdo_relay_entity=options[CONF_HDO_RELAY],
             hdo_schedule_entity=options[CONF_HDO_SCHEDULE],
             grid_charge_entity=options[CONF_GRID_CHARGE],

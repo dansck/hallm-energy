@@ -128,7 +128,7 @@ class EnergyController:
             now = dt_util.utcnow()
             reading = build_inputs(self.hass, self.config, now).snapshot.reading
             if not reading.available:
-                raise ProvisionError("charge counter is unavailable or its device link is stale")
+                raise ProvisionError("charge counter is unavailable")
             await self.runtime.async_commit(provision(
                 state,
                 counter_id=reading.counter_id,

@@ -3,7 +3,6 @@ provisioning, startup reconcile, leaving live mode, external switch-off."""
 
 from __future__ import annotations
 
-from datetime import timedelta
 from unittest.mock import patch
 
 import pytest
@@ -11,7 +10,6 @@ import pytest
 from custom_components.hallm_energy.const import STORAGE_KEY
 from custom_components.hallm_energy.controller import EnergyController, ProvisionError
 from custom_components.hallm_energy.device_io import DeviceIO
-from custom_components.hallm_energy.inputs import LIVENESS_MAX_AGE
 from custom_components.hallm_energy.lifecycle import new_installation_state, set_reconcile
 from custom_components.hallm_energy.runtime import EnergyRuntime
 from custom_components.hallm_energy.store import LocalStateStore
@@ -77,8 +75,8 @@ async def test_provision_trusts_counter_then_reconciles_ready(storage_hass, inve
     assert inverter.calls == []
 
 
-async def test_provision_refused_when_device_link_is_stale(storage_hass, inverter, freezer):
-    freezer.move_to(NOW + LIVENESS_MAX_AGE + timedelta(seconds=1))
+async def test_provision_refused_when_counter_is_unknown(storage_hass, inverter):
+    storage_hass.states.async_set(COUNTER, "unknown")
     controller = await _controller(storage_hass, _fresh_state())
     with pytest.raises(ProvisionError):
         await controller.async_provision()

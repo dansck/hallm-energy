@@ -23,9 +23,10 @@ In place:
   readback, one write arbitration point, and a safety stop that preempts any
   enabling sequence;
 - a control loop every 30 s, with inputs taken from Home Assistant states:
-  battery SOC and charge counter (only while a separate device-link
-  entity is reporting), slot starts read from the inverter, and off-peak only
-  when the measured tariff relay AND a current tariff schedule both say so.
+  battery SOC and charge counter (unknown/unavailable = invalid, so the
+  device integration must not keep a stale value), slot starts read from the
+  inverter, and off-peak only when the measured tariff relay AND a current
+  tariff schedule both say so.
 
 Nothing creates grants yet; the loop keeps the stored state reconciled and,
 in live mode, turns grid charging off whenever no grant allows it.
@@ -40,7 +41,7 @@ entities (all of them can be changed later in the integration's options):
 
 | Role | Example |
 | --- | --- |
-| Battery SOC, charge counter (total DC charge, kWh), device-link liveness | sensors |
+| Battery SOC, charge counter (total DC charge, kWh) | sensors |
 | Off-peak relay, tariff schedule | binary sensor, sensor with `schedule` and `last_update` attributes |
 | Grid charge master switch | switch |
 | Per slot (6): start (`HHMM`), capacity (%), charge enable | number, number, switch |

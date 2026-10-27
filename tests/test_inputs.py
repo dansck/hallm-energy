@@ -8,7 +8,6 @@ import pytest
 
 from custom_components.hallm_energy.config import EnergyConfig
 from custom_components.hallm_energy.inputs import (
-    LIVENESS_MAX_AGE,
     RELAY_HORIZON,
     SCHEDULE_MAX_AGE,
     build_inputs,
@@ -22,7 +21,6 @@ OPTIONS = {
     "soc_entity": "sensor.bms_soc",
     "counter_entity": COUNTER,
     "counter_epoch": "e1",
-    "liveness_entity": "sensor.inv_battery_power",
     "hdo_relay_entity": "binary_sensor.hdo_nt",
     "hdo_schedule_entity": "sensor.hdo_schedule",
     "grid_charge_entity": "switch.inv_grid_charge",
@@ -50,7 +48,6 @@ def _schedule(now=NOW, *, tariff="NT", hours=6):
 def set_telemetry(hass, *, soc="19.0", raw="7204.0", relay="on", schedule=None,
                   last_update=None, starts=STARTS) -> None:
     states = hass.states
-    states.async_set("sensor.inv_battery_power", "1050")
     states.async_set("sensor.bms_soc", soc)
     states.async_set(COUNTER, raw)
     states.async_set("binary_sensor.hdo_nt", relay)
@@ -111,24 +108,10 @@ async def test_complete_fresh_inputs(hass, at_now):
     assert snap.is_nt(NOW) is True
 
 
-async def test_stale_device_link_invalidates_soc_and_counter(hass, freezer):
-    freezer.move_to(NOW - LIVENESS_MAX_AGE - timedelta(seconds=1))
-    set_telemetry(hass)
-    freezer.move_to(NOW)
-    # SOC and counter re-reported (unchanged) but the link itself is silent
-    hass.states.async_set("sensor.bms_soc", "19.0", force_update=True)
-    inputs = build_inputs(hass, CONFIG, NOW)
-    assert "device_link_stale" in inputs.problems
-    assert inputs.snapshot.soc_pct is None
-    assert inputs.snapshot.telemetry_valid is False
-    assert inputs.snapshot.reading.available is False
-
-
-async def test_unchanged_counter_with_live_link_is_available(hass, freezer):
+async def test_long_unchanged_counter_is_still_available(hass, freezer):
     freezer.move_to(NOW - timedelta(hours=5))
     set_telemetry(hass)
     freezer.move_to(NOW)
-    hass.states.async_set("sensor.inv_battery_power", "900")
     reading = build_inputs(hass, CONFIG, NOW).snapshot.reading
     assert reading.available
     assert reading.at == NOW - timedelta(hours=5)  # time of the last actual change
@@ -142,7 +125,7 @@ async def test_unusable_counter_is_unavailable(hass, at_now, raw):
     assert "counter_unavailable" in inputs.problems
 
 
-@pytest.mark.parametrize("soc", ["unavailable", "101", "-2"])
+@pytest.mark.parametrize("soc", ["unavailable", "unknown", "101", "-2"])
 async def test_unusable_soc_invalidates_telemetry(hass, at_now, soc):
     set_telemetry(hass, soc=soc)
     snap = build_inputs(hass, CONFIG, NOW).snapshot
