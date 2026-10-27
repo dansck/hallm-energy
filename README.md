@@ -16,10 +16,17 @@ In place, shadow only (nothing writes to any device yet):
 - grant lifecycle with an episode ledger: enabling is only proposed and
   becomes active after a confirmed write; stopping never waits;
 - startup: first run vs. lost state vs. restart, single installation, and a
-  mandatory reconcile against a read-only snapshot before anything enables.
+  mandatory reconcile against a read-only snapshot before anything enables;
+- executor for an inverter with time-of-use slots: prepare (permissions off,
+  every floor raised) → enable in the current slot with the master switch
+  last → stop with the master switch first; every write confirmed by
+  readback, one write arbitration point, and a safety stop that preempts any
+  enabling sequence. Writes only when a shadow switch is explicitly off AND a
+  feature switch explicitly on — anything else only reports intents.
 
-Not implemented yet: Home Assistant entities/services, the device adapter
-with real readback, safety limits, and the history outbox.
+Not implemented yet: configuration (entity mapping) and the periodic loop,
+Home Assistant entities/services for diagnostics, restoring normal floors
+after a grant, and the history outbox.
 
 ## Install
 
