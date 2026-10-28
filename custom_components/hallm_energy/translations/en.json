@@ -48,7 +48,8 @@
           "morning_dip_floor_pct": "Morning dip floor (%)",
           "morning_dip_h": "Morning dip window (h)",
           "refill_margin_min": "Refill margin (min)",
-          "manage_floors": "Manage slot floors"
+          "manage_floors": "Manage slot floors",
+          "audit_topic": "Audit topic"
         },
         "data_description": {
           "soc_entity": "Sensor with the battery state of charge (%).",
@@ -94,7 +95,8 @@
           "morning_dip_floor_pct": "Lowest floor inside the morning window; at most reserve - 5.",
           "morning_dip_h": "How long before the PV start the dip floor may apply.",
           "refill_margin_min": "Safety margin before the end of useful PV.",
-          "manage_floors": "Activation gate: in live mode the integration keeps every slot floor at the planned value (raising always, lowering only with trustworthy inputs). Off by default; the planned floors are only reported."
+          "manage_floors": "Activation gate: in live mode the integration keeps every slot floor at the planned value (raising always, lowering only with trustworthy inputs). Off by default; the planned floors are only reported.",
+          "audit_topic": "MQTT topic for the audit events of grants and state changes. A receiver must acknowledge them on the same topic with /ack appended; events stay in a durable outbox until then. Without a topic the events are not kept."
         }
       }
     },
@@ -154,7 +156,8 @@
           "morning_dip_floor_pct": "Morning dip floor (%)",
           "morning_dip_h": "Morning dip window (h)",
           "refill_margin_min": "Refill margin (min)",
-          "manage_floors": "Manage slot floors"
+          "manage_floors": "Manage slot floors",
+          "audit_topic": "Audit topic"
         },
         "data_description": {
           "soc_entity": "Sensor with the battery state of charge (%).",
@@ -200,7 +203,8 @@
           "morning_dip_floor_pct": "Lowest floor inside the morning window; at most reserve - 5.",
           "morning_dip_h": "How long before the PV start the dip floor may apply.",
           "refill_margin_min": "Safety margin before the end of useful PV.",
-          "manage_floors": "Activation gate: in live mode the integration keeps every slot floor at the planned value (raising always, lowering only with trustworthy inputs). Off by default; the planned floors are only reported."
+          "manage_floors": "Activation gate: in live mode the integration keeps every slot floor at the planned value (raising always, lowering only with trustworthy inputs). Off by default; the planned floors are only reported.",
+          "audit_topic": "MQTT topic for the audit events of grants and state changes. A receiver must acknowledge them on the same topic with /ack appended; events stay in a durable outbox until then. Without a topic the events are not kept."
         }
       }
     },

@@ -15,6 +15,7 @@ No device writes happen here.
 from __future__ import annotations
 
 from collections.abc import Callable
+from dataclasses import replace
 
 from homeassistant.core import HomeAssistant
 
@@ -36,6 +37,8 @@ class EnergyRuntime:
         self.state: StoreState | None = None
         self.blocked_reason: str | None = None
         self.persistence_fault: str | None = None
+        # "live" / "shadow" at the time an event is created (set by the controller)
+        self.mode_provider: Callable[[], str] = lambda: "unknown"
 
     async def async_start(
         self, *, known_installation_id: str | None, new_installation_id: Callable[[], str]
@@ -84,12 +87,33 @@ class EnergyRuntime:
         depends on this: callers command charging off without a commit."""
         if self.blocked_reason is not None:
             raise RuntimeBlockedError(self.blocked_reason)
+        new_state = self._stamp_new_events(new_state)
         try:
             await self.store.async_save(new_state.to_dict())
         except StoreNotDurableError as exc:
             self.persistence_fault = str(exc) or "state write failed"
             raise
         self.state = new_state
+
+    def _stamp_new_events(self, new_state: StoreState) -> StoreState:
+        """Events created in this commit get everything a receiver needs to interpret
+        them, once and for good (the content must not change between deliveries)."""
+        known = {e.event_id for e in (self.state.pending_audit if self.state else ())}
+        if all(e.event_id in known for e in new_state.pending_audit):
+            return new_state
+        stamp = {
+            "installation_id": new_state.installation_id,
+            "policy_version": new_state.policy_version,
+            "core_version": new_state.core_version,
+            "mode": self.mode_provider(),
+            "state_revision": new_state.state_revision,
+        }
+        events = tuple(
+            e if e.event_id in known
+            else replace(e, payload={**stamp, **e.payload})
+            for e in new_state.pending_audit
+        )
+        return replace(new_state, pending_audit=events)
 
     async def async_verify_storage(self) -> bool:
         """Explicit recovery after a persistence fault: a confirmed write of the

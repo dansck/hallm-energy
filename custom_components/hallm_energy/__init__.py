@@ -97,6 +97,7 @@ async def _subscribe_profile(hass: HomeAssistant, entry: ConfigEntry,
     subscriptions = [
         (controller.config.profile_topic, controller.profiles),
         (controller.config.pv_topic, controller.pv_forecasts),
+        (controller.outbox.ack_topic, _AckReceiver(hass, entry, controller)),
     ]
     if not any(topic for topic, _ in subscriptions):
         return
@@ -117,6 +118,19 @@ async def _subscribe_profile(hass: HomeAssistant, entry: ConfigEntry,
             receiver.handle(msg.payload, dt_util.utcnow())
 
         entry.async_on_unload(await mqtt.async_subscribe(hass, topic, received, qos=1))
+
+
+class _AckReceiver:
+    """Adapter: an acknowledgement is handled by the controller under its lock."""
+
+    def __init__(self, hass: HomeAssistant, entry: ConfigEntry, controller: EnergyController):
+        self.hass, self.entry, self.controller = hass, entry, controller
+        self.error: str | None = None
+
+    def handle(self, payload: str | bytes, now) -> None:
+        self.entry.async_create_background_task(
+            self.hass, self.controller.async_handle_ack(payload), f"{DOMAIN} audit ack"
+        )
 
 
 def _start_loop(hass: HomeAssistant, entry: ConfigEntry, controller: EnergyController) -> None:

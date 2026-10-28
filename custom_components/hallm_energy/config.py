@@ -31,6 +31,7 @@ CONF_FEATURE = "feature_entity"
 CONF_PV_TOPIC = "pv_forecast_topic"
 CONF_PROFILE_TOPIC = "house_load_profile_topic"
 CONF_GRID_RELAY = "grid_relay_entity"
+CONF_AUDIT_TOPIC = "audit_topic"
 CONF_ENABLE_MORNING_DIP = "enable_morning_dip"
 CONF_MANAGE_FLOORS = "manage_floors"
 CONF_COMFORT = "comfort_pct"
@@ -102,6 +103,7 @@ class EnergyConfig:
     slot_capacity_entities: tuple[str, ...]
     slot_charge_enable_entities: tuple[str, ...]
     pv_topic: str | None = None
+    audit_topic: str | None = None
     grid_relay_entity: str | None = None
     enable_morning_dip: bool = False
     manage_floors: bool = False
@@ -161,6 +163,9 @@ class EnergyConfig:
             return topic
 
         topic, pv_topic = plain_topic(CONF_PROFILE_TOPIC), plain_topic(CONF_PV_TOPIC)
+        audit_topic = plain_topic(CONF_AUDIT_TOPIC)
+        if audit_topic is not None and audit_topic.endswith("/ack"):
+            raise ConfigInvalidError("audit topic must not end with /ack (that is its ack topic)")
         if numbers[CONF_DIP_FLOOR] > numbers[CONF_RESERVE] - 5:
             raise ConfigInvalidError("morning dip floor must be at most reserve - 5")
         enable_dip = options.get(CONF_ENABLE_MORNING_DIP, False)
@@ -184,6 +189,7 @@ class EnergyConfig:
             slot_capacity_entities=slots("capacity"),
             slot_charge_enable_entities=slots("charge_enable"),
             pv_topic=pv_topic,
+            audit_topic=audit_topic,
             grid_relay_entity=grid_relay,
             enable_morning_dip=enable_dip,
             manage_floors=manage,

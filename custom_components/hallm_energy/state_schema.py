@@ -456,9 +456,11 @@ class PendingAuditEvent:
 
     event_id: str
     payload: dict[str, Any]
+    created_at: datetime | None = None  # None only for events stored before it existed
 
     def to_dict(self) -> dict[str, Any]:
-        return {"event_id": self.event_id, "payload": self.payload}
+        return {"event_id": self.event_id, "payload": self.payload,
+                "created_at": None if self.created_at is None else _epoch(self.created_at)}
 
     @staticmethod
     def from_dict(raw: Any, where: str) -> PendingAuditEvent:
@@ -466,6 +468,7 @@ class PendingAuditEvent:
         return PendingAuditEvent(
             event_id=_require_str(raw.get("event_id"), f"{where}.event_id"),
             payload=_require_dict(raw.get("payload"), f"{where}.payload"),
+            created_at=_parse_optional_epoch(raw.get("created_at"), f"{where}.created_at"),
         )
 
 

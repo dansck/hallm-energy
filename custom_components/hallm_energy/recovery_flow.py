@@ -71,6 +71,7 @@ class RecoveryInputs:
     # slot floors planned by the floor table for the CURRENT state; set only while the
     # integration manages the floors (then it, not saved floors, is the authority)
     managed_floors: tuple[float, ...] | None = None
+    audit_full: bool = False  # the audit outbox is full: no NEW grant can be recorded
 
 
 @dataclass(frozen=True)
@@ -205,6 +206,13 @@ def plan_recovery(
         return _with_recovery(state, replace(recovery, state="wait_pv", decided_at=now,
                                              reason_code="no_offpeak_window")), \
             RecoveryOutcome("no_window", "no_offpeak_window", blocker)
+
+    if inputs.audit_full:
+        # a grant whose decisions cannot be recorded locally is not started (13: the
+        # audit never blocks protections, but it does gate NEW authorizations)
+        return _with_recovery(state, replace(recovery, state="wait_pv", decided_at=now,
+                                             reason_code="audit_outbox_full")), \
+            RecoveryOutcome("blocked", "audit_outbox_full", blocker)
 
     prepared = prepare_grant(
         replace(state, recovery=None),

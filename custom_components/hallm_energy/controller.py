@@ -28,6 +28,7 @@ from uuid import uuid4
 from homeassistant.core import HomeAssistant
 from homeassistant.util import dt as dt_util
 
+from .audit_outbox import AuditOutbox
 from .config import EnergyConfig
 from .const import POLICY_VERSION
 from .device_io import DeviceIO, WriteResult
@@ -93,6 +94,8 @@ class EnergyController:
         self.status = TickStatus()
         self.profiles = ProfileReceiver()
         self.pv_forecasts = PvForecastReceiver()
+        self.outbox = AuditOutbox(runtime, config.audit_topic, _mqtt_publisher(hass))
+        runtime.mode_provider = lambda: "live" if self.gates.live() else "shadow"
         self._lock = asyncio.Lock()
         self._was_live = False
         self._listeners: list[Callable[[], None]] = []
@@ -122,9 +125,16 @@ class EnergyController:
             except Exception as exc:  # the loop must survive; nothing enables after it
                 _LOGGER.exception("tick failed")
                 status.result, status.error = "error", repr(exc)
+            await self.outbox.async_deliver(now)
             self.status = status
             self._notify()
             return status
+
+    async def async_handle_ack(self, payload: str | bytes) -> None:
+        """Acknowledgement from the audit receiver — serialized with the control loop."""
+        async with self._lock:
+            await self.outbox.async_handle_ack(payload, dt_util.utcnow())
+            self._notify()
 
     async def async_release(self) -> None:
         """Called on unload: if live, leave charging off behind."""
@@ -313,6 +323,7 @@ class EnergyController:
             tomorrow=_local_tomorrow(now),
             live=status.live,
             managed_floors=self._managed_floors(snapshot, status),
+            audit_full=self.outbox.full,
         )
         state = self.runtime.state
         new_state, outcome = plan_recovery(state, inputs, params, new_id=lambda: uuid4().hex,
@@ -369,3 +380,12 @@ def _local_tomorrow(now: datetime) -> tuple[datetime, datetime]:
     start = dt_util.start_of_local_day(today + timedelta(days=1))
     end = dt_util.start_of_local_day(today + timedelta(days=2))
     return dt_util.as_utc(start), dt_util.as_utc(end)
+
+
+def _mqtt_publisher(hass: HomeAssistant):
+    async def publish(topic: str, payload: str) -> None:
+        from homeassistant.components import mqtt
+
+        await mqtt.async_publish(hass, topic, payload, qos=1, retain=False)
+
+    return publish

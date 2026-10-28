@@ -95,7 +95,9 @@ def test_valid_snapshot_round_trips_through_json():
     serialized = json.loads(json.dumps(state.to_dict()))
     assert parse_store_state(serialized) == state
     # files written before `recovery` existed parse unchanged; new writes carry the key
-    assert serialized == {**_raw(), "recovery": None,
+    expected = _raw()
+    expected["pending_audit"] = [{**e, "created_at": None} for e in expected["pending_audit"]]
+    assert serialized == {**expected, "recovery": None,
                           "morning": {"phase": "none", "floor_state_pct": None}}
 
 

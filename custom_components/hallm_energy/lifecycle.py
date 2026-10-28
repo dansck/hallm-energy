@@ -73,11 +73,13 @@ def _bump(state: StoreState, **changes: Any) -> StoreState:
 
 
 def _audit(
-    state: StoreState, event_id: str, payload: dict[str, Any]
+    state: StoreState, event_id: str, payload: dict[str, Any], at: datetime
 ) -> tuple[PendingAuditEvent, ...]:
+    """Add an event once per `event_id`; `at` is its creation time and never changes."""
     if any(e.event_id == event_id for e in state.pending_audit):
         return state.pending_audit
-    return (*state.pending_audit, PendingAuditEvent(event_id=event_id, payload=payload))
+    return (*state.pending_audit,
+            PendingAuditEvent(event_id=event_id, payload=payload, created_at=at))
 
 
 def _core_grant(active: ActiveGrant) -> Grant:
@@ -208,7 +210,7 @@ def reprovision(
         "counter_id": counter_id,
         "counter_epoch": counter_epoch,
         "trusted_raw_dc_kwh": trusted_raw_dc_kwh,
-    })
+    }, at)
     return _bump(
         state,
         provisioning_state="ready",
@@ -300,6 +302,7 @@ def prepare_grant(
         state,
         f"{identity.id}:prepared",
         {"kind": "grant_prepared", "grant_id": identity.id, "episode_id": episode_id},
+        now,
     )
     return _bump(
         state,
@@ -457,6 +460,7 @@ def record_step_result(
         state,
         f"{step_id}:confirmed",
         {"kind": "step_confirmed", "step_id": step_id, "grant_id": step.grant_id},
+        now,
     )
     return _bump(state, pending_step=None, active_grant=new_active, pending_audit=audit)
 
@@ -493,6 +497,7 @@ def confirm_closed(state: StoreState, *, now: datetime) -> StoreState:
             "budget_dc_kwh": active.identity.budget_dc_kwh,
             "final_used_dc_kwh": active.usage.used_dc_kwh,
         },
+        now,
     )
     recovery = state.recovery
     if recovery is not None and recovery.episode_id == episode_id:
@@ -516,7 +521,7 @@ def extend_window(state: StoreState, *, new_end: datetime, now: datetime) -> Sto
         "episode_id": active.identity.episode_id,
         "previous_end": int(active.window.end.timestamp()),
         "new_end": int(new_end.timestamp()),
-    })
+    }, now)
     window = replace(active.window, end=new_end)
     return _bump(state, active_grant=replace(active, window=window), pending_audit=audit)
 
@@ -636,6 +641,7 @@ def _start_closing(state: StoreState, reason: str | None, now: datetime) -> Stor
             "reason": reason,
             "used_dc_kwh": active.usage.used_dc_kwh,
         },
+        now,
     )
     return replace(
         state, active_grant=_with_status(active, "closing", reason, now), pending_audit=audit

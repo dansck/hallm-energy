@@ -12,6 +12,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.device_registry import DeviceEntryType, DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
+from .audit_outbox import AUDIT_CAPACITY
 from .const import DOMAIN
 from .data import HallmEnergyData
 
@@ -137,5 +138,11 @@ class StatusSensor(SensorEntity):
                 "pv_forecast_quality": None if controller.pv_forecasts.forecast is None
                 else controller.pv_forecasts.forecast.quality,
                 "pv_forecast_error": controller.pv_forecasts.error,
+                "audit": controller.outbox.label,
+                "audit_pending": controller.outbox.pending,
+                "audit_capacity": AUDIT_CAPACITY,
+                "audit_error": controller.outbox.last_error,
+                "audit_last_ack": None if controller.outbox.last_ack_at is None
+                else controller.outbox.last_ack_at.isoformat(),
             }
         return attrs

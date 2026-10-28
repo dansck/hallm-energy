@@ -11,6 +11,7 @@ from homeassistant.core import callback
 from homeassistant.helpers import selector
 
 from .config import (
+    CONF_AUDIT_TOPIC,
     CONF_COUNTER,
     CONF_COUNTER_EPOCH,
     CONF_ENABLE_MORNING_DIP,
@@ -56,6 +57,7 @@ def _schema() -> vol.Schema:
     fields[vol.Required(CONF_SHADOW)] = _entity(_SWITCHES)
     fields[vol.Required(CONF_FEATURE)] = _entity(_SWITCHES)
     fields[vol.Optional(CONF_PV_TOPIC)] = selector.TextSelector()
+    fields[vol.Optional(CONF_AUDIT_TOPIC)] = selector.TextSelector()
     fields[vol.Optional(CONF_GRID_RELAY)] = _entity("binary_sensor")
     fields[vol.Required(CONF_ENABLE_MORNING_DIP, default=False)] = selector.BooleanSelector()
     fields[vol.Required(CONF_MANAGE_FLOORS, default=False)] = selector.BooleanSelector()
