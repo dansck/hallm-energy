@@ -24,10 +24,12 @@ from homeassistant.core import HomeAssistant
 
 from .device_io import DeviceIO, WriteResult
 from .energy_core.grant import DEFAULT_GRANT_BUDGET_FACTOR, CounterReading
+from .floor_table import FloorPlan
 from .lifecycle import confirm_closed, record_step_result, step_grant
 from .recovery_flow import floor_writes
 from .runtime import EnergyRuntime
 from .slot_plan import (
+    CAPACITY_TOLERANCE_PCT,
     Op,
     Readback,
     SlotEntities,
@@ -130,7 +132,11 @@ class GrantExecutor:
 
     # --- one cycle -------------------------------------------------------------------
 
-    async def async_cycle(self, snapshot: Snapshot) -> CycleReport:
+    async def async_cycle(self, snapshot: Snapshot, *, floor_plan: FloorPlan | None = None,
+                          lowering_ok: bool = False) -> CycleReport:
+        """`floor_plan` = the table floors to keep (only when floor management is
+        on); `lowering_ok` = the plan was built from trustworthy inputs, so a floor
+        may also be LOWERED (raising is always allowed)."""
         async with self._cycle_lock:
             report = CycleReport(live=self.gates.live())
             state = self.runtime.state
@@ -184,7 +190,10 @@ class GrantExecutor:
             if step_id is not None:
                 await self._enable(step_id, rev, snapshot, report)
             await self._close_if_stopped(snapshot.now, report)
-            await self._restore_floors(report)
+            if floor_plan is None:
+                await self._restore_floors(report)
+            else:
+                await self._apply_floor_plan(floor_plan, lowering_ok, report)
             return report
 
     # --- internals ---------------------------------------------------------------------
@@ -262,6 +271,45 @@ class GrantExecutor:
                 await self.async_safety_stop()
             return False
         return True
+
+    async def _apply_floor_plan(self, plan: FloorPlan, lowering_ok: bool,
+                                report: CycleReport) -> None:
+        """Keep the slot floors at the table plan. Never while a grant, a pending step
+        or charging is in play (the grant owns the floors then); raises first, lowers
+        only with `lowering_ok`; a plan that fails its sanity check is never written;
+        stops at the first write that is not confirmed by readback."""
+        state = self.runtime.state
+        if (
+            state is None
+            or state.active_grant is not None
+            or state.pending_step is not None
+            or not self.runtime.may_enable
+        ):
+            return
+        error = plan.sanity_error()
+        if error is not None:
+            report.error = f"floor plan refused: {error}"
+            return
+        readback = self.io.read_slots(self.entities)
+        if readback.charging_enabled is not False:
+            return
+        raises, lowers = [], []
+        for entity, planned, current in zip(self.entities.slot_capacity, plan.floors,
+                                            readback.slot_capacity, strict=True):
+            op = Op(entity, float(planned))
+            if current is None:
+                raises.append(op)  # unknown: write the safe (planned) value
+            elif planned > current + CAPACITY_TOLERANCE_PCT:
+                raises.append(op)
+            elif planned < current - CAPACITY_TOLERANCE_PCT:
+                lowers.append(op)
+        ops = raises + (lowers if lowering_ok else [])
+        if not ops:
+            return
+        if report.live:
+            report.writes += await self._run(ops, self.safety_revision, enabling=False)
+        else:
+            report.intents += ops
 
     async def _restore_floors(self, report: CycleReport) -> None:
         """After a recovery grant: keep the hold floor (`cloudy_hold`, raising

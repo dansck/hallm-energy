@@ -455,3 +455,46 @@ def test_pv_receiver_keeps_newest_valid_forecast_and_never_refreshes_it():
     # a replay of the same retained message keeps its original retrieval time
     receiver.handle(json.dumps(good.to_dict()), NOW + timedelta(hours=5))
     assert receiver.forecast.retrieved_at == good.retrieved_at
+
+
+# --- managed floors: the table, not saved floors, is the authority -----------------------
+
+
+def test_managed_after_grant_needs_no_saved_floors_and_ends_when_the_plan_is_read_back():
+    prepared_state, closed = _closed(floors=(10.0, None, 10.0, 10.0, 10.0, 20.0))
+    assert closed.recovery.restore_floors is None  # unknown at grant time
+    t = NOW + timedelta(hours=4)
+    plan = (25.0, 25.0, 25.0, 25.0, 25.0, 20.0)
+    restoring, outcome = _plan(closed, replace(_after(t), managed_floors=plan))
+    assert outcome.action == "restoring"  # not "floors_unknown"
+    # the plan was for the state before this transition: not done yet
+    still, outcome = _plan(restoring, replace(_after(t + timedelta(minutes=1), floors=RAISED),
+                                              managed_floors=plan))
+    assert outcome.action == "restoring"
+    done, outcome = _plan(restoring, replace(_after(t + timedelta(minutes=2), floors=plan),
+                                             managed_floors=plan))
+    assert outcome.action == "ended" and done.recovery is None
+
+
+def test_managed_hold_still_follows_the_forecast():
+    _, closed = _closed()
+    t = NOW + timedelta(hours=4)
+    held, outcome = _plan(closed, replace(_after(t, pv=lambda _t: 0.0),
+                                          managed_floors=(25.0,) * 6))
+    assert outcome.action == "hold" and outcome.reason == "cloudy"
+
+
+def test_managed_ignores_floors_changed_from_outside_because_the_plan_rewrites_them():
+    _, closed = _closed()
+    t = NOW + timedelta(hours=4)
+    manual = (25.0, 15.0, 25.0, 25.0, 25.0, 25.0)
+    _, outcome = _plan(closed, replace(_after(t, floors=manual), managed_floors=(25.0,) * 6))
+    assert outcome.action == "restoring"  # no floor_conflict: the table is the authority
+
+
+def test_managed_entry_does_not_depend_on_the_found_floor():
+    inputs = replace(_inputs(pv=lambda _t: 0.0, floor=10.0), managed_floors=(25.0,) * 6)
+    _, outcome = _plan(empty_state(), inputs)
+    assert outcome.action == "grant_prepared"
+    _, outcome = _plan(empty_state(), _inputs(pv=lambda _t: 0.0, floor=10.0))
+    assert outcome.reason == "floor_below_reserve"

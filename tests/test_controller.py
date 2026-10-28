@@ -340,3 +340,59 @@ async def test_morning_exception_stays_off_by_default(storage_hass, inverter):
     status = await controller.async_tick()
     assert controller.runtime.state.morning.phase == "none"
     assert status.morning is not None and status.morning.phase == "none"
+
+
+# --- managed floors in the loop ------------------------------------------------------------
+
+
+def _managed(controller):
+    from custom_components.hallm_energy.config import EnergyConfig
+    from tests.test_inputs import OPTIONS
+
+    controller.config = EnergyConfig.from_options({**OPTIONS, "manage_floors": True})
+    return controller
+
+
+async def test_managed_floors_raise_to_the_table_in_live_mode(storage_hass, inverter):
+    from tests.test_inputs import set_telemetry
+
+    await storage_hass.config.async_set_time_zone("Europe/Prague")
+    set_telemetry(storage_hass, schedule=_d57d_schedule(), soc="50.0")
+    controller = _managed(await _controller(storage_hass, empty_state(), live=True))
+    status = await controller.async_tick()
+    assert status.floors["managed"] is True
+    assert [float(inverter.value(c)) for c in CAPS] == [25, 25, 25, 25, 25, 20]
+    assert {w.op.entity_id for w in status.writes} == set(CAPS[:5])
+
+
+async def test_managed_floors_are_lowered_only_with_a_known_schedule(storage_hass, inverter):
+    from tests.test_inputs import set_telemetry
+
+    await storage_hass.config.async_set_time_zone("Europe/Prague")
+    set_telemetry(storage_hass, schedule=_d57d_schedule(), soc="50.0")
+    for cap in CAPS:
+        storage_hass.states.async_set(cap, "30.0")
+    controller = _managed(await _controller(storage_hass, empty_state(), live=True))
+    await controller.async_tick()
+    assert [float(inverter.value(c)) for c in CAPS] == [25, 25, 25, 25, 25, 20]  # lowered
+    # schedule lost: floors are not lowered (and the plan falls back to floor_vt)
+    set_telemetry(storage_hass, soc="50.0")  # default schedule covers only 12 hours
+    for cap in CAPS:
+        storage_hass.states.async_set(cap, "30.0")
+    inverter.calls.clear()
+    await controller.async_tick()
+    assert [c for c in inverter.calls if c[0] in CAPS] == []
+
+
+async def test_recovery_entry_gate_depends_on_floor_management(storage_hass, inverter):
+    from tests.test_inputs import set_telemetry
+
+    set_telemetry(storage_hass, soc="15.0")
+    for cap in CAPS:
+        storage_hass.states.async_set(cap, "10.0")  # the old manual morning-dip setting
+    plain = await _controller(storage_hass, empty_state(), live=False)
+    status = await plain.async_tick()
+    assert status.recovery.reason == "floor_below_reserve"
+    managed = _managed(await _controller(storage_hass, empty_state(), live=False))
+    status = await managed.async_tick()
+    assert status.recovery.action == "grant_prepared"  # only the morning phase lowers a floor

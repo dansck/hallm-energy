@@ -32,6 +32,7 @@ CONF_PV_TOPIC = "pv_forecast_topic"
 CONF_PROFILE_TOPIC = "house_load_profile_topic"
 CONF_GRID_RELAY = "grid_relay_entity"
 CONF_ENABLE_MORNING_DIP = "enable_morning_dip"
+CONF_MANAGE_FLOORS = "manage_floors"
 CONF_COMFORT = "comfort_pct"
 CONF_DIP_FLOOR = "morning_dip_floor_pct"
 CONF_DIP_H = "morning_dip_h"
@@ -103,6 +104,7 @@ class EnergyConfig:
     pv_topic: str | None = None
     grid_relay_entity: str | None = None
     enable_morning_dip: bool = False
+    manage_floors: bool = False
     floor: FloorParams | None = None
     morning: MorningParams | None = None
     profile_topic: str | None = None
@@ -164,6 +166,9 @@ class EnergyConfig:
         enable_dip = options.get(CONF_ENABLE_MORNING_DIP, False)
         if not isinstance(enable_dip, bool):
             raise ConfigInvalidError("enable_morning_dip: expected a boolean")
+        manage = options.get(CONF_MANAGE_FLOORS, False)
+        if not isinstance(manage, bool):
+            raise ConfigInvalidError("manage_floors: expected a boolean")
         grid_relay = options.get(CONF_GRID_RELAY) or None
 
         return EnergyConfig(
@@ -181,6 +186,7 @@ class EnergyConfig:
             pv_topic=pv_topic,
             grid_relay_entity=grid_relay,
             enable_morning_dip=enable_dip,
+            manage_floors=manage,
             floor=FloorParams(
                 reserve_pct=numbers[CONF_RESERVE],
                 comfort_pct=numbers[CONF_COMFORT],

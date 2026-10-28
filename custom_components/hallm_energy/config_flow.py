@@ -19,6 +19,7 @@ from .config import (
     CONF_GRID_RELAY,
     CONF_HDO_RELAY,
     CONF_HDO_SCHEDULE,
+    CONF_MANAGE_FLOORS,
     CONF_PROFILE_TOPIC,
     CONF_PV_TOPIC,
     CONF_SHADOW,
@@ -57,6 +58,7 @@ def _schema() -> vol.Schema:
     fields[vol.Optional(CONF_PV_TOPIC)] = selector.TextSelector()
     fields[vol.Optional(CONF_GRID_RELAY)] = _entity("binary_sensor")
     fields[vol.Required(CONF_ENABLE_MORNING_DIP, default=False)] = selector.BooleanSelector()
+    fields[vol.Required(CONF_MANAGE_FLOORS, default=False)] = selector.BooleanSelector()
     fields[vol.Optional(CONF_PROFILE_TOPIC)] = selector.TextSelector()
     for key, (default, low, high) in NUMBER_OPTIONS.items():
         fields[vol.Required(key, default=default)] = selector.NumberSelector(

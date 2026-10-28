@@ -32,7 +32,7 @@ from .config import EnergyConfig
 from .const import POLICY_VERSION
 from .device_io import DeviceIO, WriteResult
 from .executor import Gates, GrantExecutor, Snapshot
-from .floor_table import FloorContext, floor_plan, hold_floor_pct
+from .floor_table import FloorContext, FloorPlan, floor_plan, hold_floor_pct
 from .inputs import (
     build_inputs,
     offpeak_steps,
@@ -196,8 +196,13 @@ class EnergyController:
             return
         if not await self._plan_recovery(snapshot, readback, status):
             return
-        self._report_floors(snapshot, readback, status)
-        report = await self.executor.async_cycle(snapshot)
+        plan = self._report_floors(snapshot, readback, status)
+        managed = self.config.manage_floors and plan is not None
+        report = await self.executor.async_cycle(
+            snapshot,
+            floor_plan=plan if managed else None,
+            lowering_ok=managed and snapshot.telemetry_valid and "unknown" not in plan.kinds,
+        )
         status.result = "cycle"
         status.reason = report.reason
         status.intents += report.intents
@@ -224,12 +229,31 @@ class EnergyController:
         status.morning = outcome
         return new_state == state or await self._commit(new_state, status)
 
-    def _report_floors(self, snapshot: Snapshot, readback: Readback, status: TickStatus) -> None:
-        """Planned slot floors per the floor table next to the actual ones. Nothing is
-        written from this — it shows what the table would do before it may."""
+    def _report_floors(self, snapshot: Snapshot, readback: Readback, status: TickStatus
+                       ) -> FloorPlan | None:
+        """Planned slot floors per the floor table next to the actual ones (the executor
+        writes them only with `manage_floors`)."""
+        plan, hold = self._floor_plan(snapshot, status.morning)
+        if plan is None:
+            return None
+        actual = list(readback.slot_capacity)
+        status.floors = {
+            "planned": list(plan.floors),
+            "actual": actual,
+            "kinds": list(plan.kinds),
+            "hold": hold,
+            "reasons": list(plan.reasons),
+            "managed": self.config.manage_floors,
+            "diff": [i + 1 for i, (a, p) in enumerate(zip(actual, plan.floors, strict=True))
+                     if a is None or abs(a - p) > 0.5],
+        }
+        return plan
+
+    def _floor_plan(self, snapshot: Snapshot, outcome: MorningOutcome | None
+                    ) -> tuple[FloorPlan | None, float | None]:
         params, state = self.config.floor, self.runtime.state
         if params is None or snapshot.slot_starts is None or state is None:
-            return
+            return None, None
         now, tz = snapshot.now, dt_util.get_default_time_zone()
         intervals = schedule_intervals(self.hass, self.config, now)
 
@@ -258,24 +282,13 @@ class EnergyController:
         entities = replace(self.config.slot_entities, slot_starts=snapshot.slot_starts)
         charging = current_slot(entities, snapshot.local_time) \
             if grant is not None and grant.status == "active" else None
-        outcome = status.morning
         ctx = FloorContext(
             now=now, tz=tz, slot_starts=snapshot.slot_starts, is_nt_at=is_nt_at,
             hold_floor_pct=hold, grant_target_pct=target, charging_slot=charging,
             phase=state.morning.phase, refill_floor_pct=state.morning.floor_state_pct,
             dip_window=None if outcome is None else outcome.dip_window,
         )
-        plan = floor_plan(params, ctx)
-        actual = list(readback.slot_capacity)
-        status.floors = {
-            "planned": list(plan.floors),
-            "actual": actual,
-            "kinds": list(plan.kinds),
-            "hold": hold,
-            "reasons": list(plan.reasons),
-            "diff": [i + 1 for i, (a, p) in enumerate(zip(actual, plan.floors, strict=True))
-                     if a is None or abs(a - p) > 0.5],
-        }
+        return floor_plan(params, ctx), hold
 
     async def _plan_recovery(self, snapshot: Snapshot, readback: Readback,
                              status: TickStatus) -> bool:
@@ -299,12 +312,20 @@ class EnergyController:
             floors=readback.slot_capacity,
             tomorrow=_local_tomorrow(now),
             live=status.live,
+            managed_floors=self._managed_floors(snapshot, status),
         )
         state = self.runtime.state
         new_state, outcome = plan_recovery(state, inputs, params, new_id=lambda: uuid4().hex,
                                            policy_version=POLICY_VERSION)
         status.recovery = outcome
         return new_state == state or await self._commit(new_state, status)
+
+    def _managed_floors(self, snapshot: Snapshot, status: TickStatus) -> tuple[float, ...] | None:
+        """The table floors for the state in force right now — only while managing."""
+        if not self.config.manage_floors:
+            return None
+        plan, _ = self._floor_plan(snapshot, status.morning)
+        return None if plan is None else plan.floors
 
     async def _reconcile(self, snapshot: Snapshot, readback: Readback,
                          status: TickStatus) -> None:

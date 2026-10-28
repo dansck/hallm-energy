@@ -21,7 +21,7 @@ from custom_components.hallm_energy.lifecycle import set_reconcile
 from custom_components.hallm_energy.runtime import EnergyRuntime
 from custom_components.hallm_energy.slot_plan import Op, SlotEntities
 from custom_components.hallm_energy.store import LocalStateStore
-from tests.test_lifecycle import COUNTER, T0, prepared
+from tests.test_lifecycle import COUNTER, T0, empty_state, prepared, step
 
 GRID = "switch.inv_grid_charge"
 CAPS = tuple(f"number.inv_slot{i}_capacity" for i in range(1, 7))
@@ -372,3 +372,116 @@ async def test_restoring_waits_while_charging_is_on(storage_hass, inverter):
                                gates=_gates(storage_hass, shadow="on"))
     report = await executor.async_cycle(_snapshot(soc=25.0))
     assert not [op for op in report.intents if op.entity_id in CAPS]
+
+
+# --- managed floors (the table plan) -----------------------------------------------------
+
+
+def _plan(floors, *, below=(), reserve=20.0):
+    from custom_components.hallm_energy.floor_table import FloorPlan
+
+    return FloorPlan(tuple(floors), ("vt",) * len(floors), (), reserve_pct=reserve,
+                     below_reserve_slots=tuple(below))
+
+
+def _set_caps(hass, values):
+    for cap, value in zip(CAPS, values, strict=True):
+        hass.states.async_set(cap, str(value))
+
+
+async def _idle_executor(hass, **kw):
+    return await _executor(hass, state=set_reconcile(empty_state(), "ready", None), **kw)
+
+
+async def test_table_plan_raises_always_and_lowers_only_when_allowed(storage_hass, inverter):
+    _set_caps(storage_hass, [10, 20, 30, 30, 25, 25])
+    executor = await _idle_executor(storage_hass)
+    plan = _plan([25, 25, 25, 25, 25, 20])
+    report = await executor.async_cycle(_snapshot(soc=50.0), floor_plan=plan, lowering_ok=False)
+    assert [float(inverter.value(c)) for c in CAPS] == [25, 25, 30, 30, 25, 25]  # raised only
+    assert {w.op.entity_id for w in report.writes} == {CAPS[0], CAPS[1]}
+    report = await executor.async_cycle(_snapshot(soc=50.0), floor_plan=plan, lowering_ok=True)
+    assert [float(inverter.value(c)) for c in CAPS] == [25, 25, 25, 25, 25, 20]
+
+
+async def test_table_plan_writes_raises_before_lowers(storage_hass, inverter):
+    _set_caps(storage_hass, [10, 30, 25, 25, 25, 25])
+    executor = await _idle_executor(storage_hass)
+    await executor.async_cycle(_snapshot(soc=50.0), floor_plan=_plan([25, 25, 25, 25, 25, 20]),
+                               lowering_ok=True)
+    values = [c[1] for c in inverter.calls]
+    assert [c[0] for c in inverter.calls] == [CAPS[0], CAPS[1], CAPS[5]] and values == [25, 25, 20]
+
+
+async def test_a_floor_below_the_reserve_needs_an_exception_to_be_written(storage_hass, inverter):
+    _set_caps(storage_hass, [25] * 6)
+    executor = await _idle_executor(storage_hass)
+    report = await executor.async_cycle(_snapshot(soc=50.0), lowering_ok=True,
+                                        floor_plan=_plan([10, 25, 25, 25, 25, 20]))
+    assert inverter.calls == [] and "below_reserve_without_exception" in report.error
+    report = await executor.async_cycle(_snapshot(soc=50.0), lowering_ok=True,
+                                        floor_plan=_plan([10, 25, 25, 25, 25, 20], below=(0,)))
+    assert inverter.value(CAPS[0]) == "10.0" and report.error is None
+
+
+@pytest.mark.parametrize("blocker", ["grant", "charging", "pending", "not_ready", "shadow"])
+async def test_table_plan_is_never_written_when_something_else_owns_the_floors(
+        storage_hass, inverter, blocker):
+    """The plan floors are 35: the grant's own preparation writes 25 (its target), so a
+    35 can only come from the table."""
+    from tests.test_lifecycle import prepared
+
+    _set_caps(storage_hass, [10] * 6)
+    state = set_reconcile(empty_state(), "ready", None)
+    gates = None
+    if blocker == "grant":
+        state = set_reconcile(prepared(), "ready", None)
+    elif blocker == "pending":
+        state = set_reconcile(step(prepared()).state, "ready", None)
+    elif blocker == "not_ready":
+        state = set_reconcile(empty_state(), "required", "startup")
+    elif blocker == "shadow":
+        gates = _gates(storage_hass, shadow="on")
+    executor = await _executor(storage_hass, state=state, gates=gates)
+    if blocker == "charging":
+        # charging is on and the device ignores every switch-off: it cannot be confirmed off
+        storage_hass.states.async_set(GRID, "on")
+        storage_hass.states.async_set(CES[NIGHT_SLOT], "on")
+        inverter.ignore |= {(GRID, False), *((ce, False) for ce in CES)}
+    # SOC below the grant target keeps the grant open (above it the grant would close)
+    report = await executor.async_cycle(_snapshot(soc=19.0), floor_plan=_plan([35] * 6),
+                                        lowering_ok=True)
+    assert not [c for c in inverter.calls if c[0] in CAPS and c[1] == 35.0]
+    if blocker != "shadow":  # shadow reports the table's intent, by design
+        assert not [op for op in report.intents if op.entity_id in CAPS and op.value == 35.0]
+
+
+async def test_after_a_confirmed_stop_the_table_plan_may_be_written(storage_hass, inverter):
+    _set_caps(storage_hass, [10] * 6)
+    storage_hass.states.async_set(GRID, "on")
+    storage_hass.states.async_set(CES[NIGHT_SLOT], "on")
+    executor = await _idle_executor(storage_hass)
+    await executor.async_cycle(_snapshot(soc=50.0), floor_plan=_plan([35] * 6))
+    assert inverter.value(GRID) == "off"  # stopped first (no grant allows charging)
+    assert [float(inverter.value(c)) for c in CAPS] == [35.0] * 6
+
+
+async def test_shadow_only_reports_the_table_writes(storage_hass, inverter):
+    _set_caps(storage_hass, [10] * 6)
+    executor = await _idle_executor(storage_hass, gates=_gates(storage_hass, shadow="on"))
+    report = await executor.async_cycle(_snapshot(soc=50.0), floor_plan=_plan([25] * 6))
+    assert inverter.calls == []
+    assert [op.value for op in report.intents if op.entity_id in CAPS] == [25.0] * 6
+
+
+async def test_unreadable_floor_gets_the_planned_value_and_a_failed_write_stops_the_rest(
+        storage_hass, inverter):
+    storage_hass.states.async_set(CAPS[1], "unavailable")
+    _set_caps_partial = [10, None, 10, 10, 10, 10]
+    for cap, value in zip(CAPS, _set_caps_partial, strict=True):
+        if value is not None:
+            storage_hass.states.async_set(cap, str(value))
+    executor = await _idle_executor(storage_hass)
+    inverter.ignore.add((CAPS[2], 25.0))  # the third write is not applied by the device
+    await executor.async_cycle(_snapshot(soc=50.0), floor_plan=_plan([25] * 6), lowering_ok=True)
+    assert [c[0] for c in inverter.calls] == [CAPS[0], CAPS[1], CAPS[2]]  # stopped there

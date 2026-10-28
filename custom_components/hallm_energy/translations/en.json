@@ -47,7 +47,8 @@
           "comfort_pct": "Comfort margin (%)",
           "morning_dip_floor_pct": "Morning dip floor (%)",
           "morning_dip_h": "Morning dip window (h)",
-          "refill_margin_min": "Refill margin (min)"
+          "refill_margin_min": "Refill margin (min)",
+          "manage_floors": "Manage slot floors"
         },
         "data_description": {
           "soc_entity": "Sensor with the battery state of charge (%).",
@@ -92,7 +93,8 @@
           "comfort_pct": "Added to the reserve to get the high-tariff floor.",
           "morning_dip_floor_pct": "Lowest floor inside the morning window; at most reserve - 5.",
           "morning_dip_h": "How long before the PV start the dip floor may apply.",
-          "refill_margin_min": "Safety margin before the end of useful PV."
+          "refill_margin_min": "Safety margin before the end of useful PV.",
+          "manage_floors": "Activation gate: in live mode the integration keeps every slot floor at the planned value (raising always, lowering only with trustworthy inputs). Off by default; the planned floors are only reported."
         }
       }
     },
@@ -151,7 +153,8 @@
           "comfort_pct": "Comfort margin (%)",
           "morning_dip_floor_pct": "Morning dip floor (%)",
           "morning_dip_h": "Morning dip window (h)",
-          "refill_margin_min": "Refill margin (min)"
+          "refill_margin_min": "Refill margin (min)",
+          "manage_floors": "Manage slot floors"
         },
         "data_description": {
           "soc_entity": "Sensor with the battery state of charge (%).",
@@ -196,7 +199,8 @@
           "comfort_pct": "Added to the reserve to get the high-tariff floor.",
           "morning_dip_floor_pct": "Lowest floor inside the morning window; at most reserve - 5.",
           "morning_dip_h": "How long before the PV start the dip floor may apply.",
-          "refill_margin_min": "Safety margin before the end of useful PV."
+          "refill_margin_min": "Safety margin before the end of useful PV.",
+          "manage_floors": "Activation gate: in live mode the integration keeps every slot floor at the planned value (raising always, lowering only with trustworthy inputs). Off by default; the planned floors are only reported."
         }
       }
     },

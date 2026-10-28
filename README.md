@@ -47,9 +47,15 @@ In place:
   tariff schedule (not from the slot index) — high tariff: reserve + comfort,
   off-peak during the day: that plus what the remaining high-tariff blocks need
   beyond the PV forecast, off-peak after the last high tariff: the reserve —
-  with the morning exception and grants overlaid. For now it is only REPORTED
-  next to the actual floors in the status sensor (`floors`); nothing is
-  written from it yet;
+  with the morning exception and grants overlaid. It is always REPORTED next to
+  the actual floors in the status sensor (`floors`). Behind a second activation
+  gate (`Manage slot floors`, off by default) and only in live mode the
+  integration keeps the floors at the plan: raising always, lowering only
+  while the schedule and telemetry are trustworthy, never below the reserve
+  without the morning exception, never while a grant, a pending step or
+  charging is in play, every write confirmed by readback. With the gate on, the
+  plan (not the floors found earlier) is the authority after a grant, and a
+  recovery episode no longer waits for a deliberately low floor;
 - the morning exception: before sunrise the battery may fall to a lower floor
   when PV is forecast to restore the reserve by the end of useful PV. It is
   behind an activation gate (`Enable morning exception`, off by default), needs
@@ -60,9 +66,8 @@ In place:
 In shadow, grants are created and tracked like in live mode, but nothing is
 written to the inverter.
 
-Not implemented yet: writing the table floors (the integration still only
-restores the floors it found after a grant), planned loads such as an EV with a
-deadline, and the history outbox.
+Not implemented yet: planned loads such as an EV with a deadline, and the
+history outbox.
 
 ## Configuration
 
@@ -79,6 +84,7 @@ entities (all of them can be changed later in the integration's options):
 | PV forecast topic (optional) | retained MQTT topic with the PV production snapshot: times of retrieval and (if the source states it) issue, validity, 15-minute kW with the correction already applied |
 | House load profile topic (optional) | retained MQTT topic |
 | Grid present relay (optional), enable morning exception | binary sensor on while the grid is present (without it the morning exception never starts); gate, off by default |
+| Manage slot floors | gate, off by default: write the planned floors (live mode only) |
 
 Recovery parameters (reserve, target, wait for PV, battery capacity and
 efficiency, budget factor, …) have defaults and can be changed

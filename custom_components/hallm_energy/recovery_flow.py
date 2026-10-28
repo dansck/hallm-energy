@@ -68,6 +68,9 @@ class RecoveryInputs:
     floors: tuple[float | None, ...] = ()  # current slot floors (readback)
     tomorrow: tuple[datetime, datetime] | None = None  # local tomorrow as UTC [start, end)
     live: bool = True  # shadow: floors were never raised, so they are not compared
+    # slot floors planned by the floor table for the CURRENT state; set only while the
+    # integration manages the floors (then it, not saved floors, is the authority)
+    managed_floors: tuple[float, ...] | None = None
 
 
 @dataclass(frozen=True)
@@ -157,7 +160,9 @@ def plan_recovery(
         return state, RecoveryOutcome("none", f"morning_{state.morning.phase}")
     if recovery is None:
         floor = inputs.current_floor_pct
-        if floor is None or floor < params.reserve_pct:
+        # transitional rule while floors are not managed: a floor below the reserve is
+        # a deliberate dip. Managed: only the morning phase (checked above) lowers it.
+        if inputs.managed_floors is None and (floor is None or floor < params.reserve_pct):
             return state, RecoveryOutcome("none", "floor_below_reserve")
         recovery = RecoveryEpisode(
             episode_id=new_id(),
@@ -272,6 +277,12 @@ def floor_writes(recovery: RecoveryEpisode,
     return writes
 
 
+def _floors_match(actual: Sequence[float | None], planned: Sequence[float] | None) -> bool:
+    return planned is not None and len(actual) == len(planned) and all(
+        a is not None and abs(a - p) <= CAPACITY_TOLERANCE_PCT
+        for a, p in zip(actual, planned, strict=True))
+
+
 def _hold(state: StoreState, recovery: RecoveryEpisode, reason: str, now: datetime,
           blocker: str | None = None) -> tuple[StoreState, RecoveryOutcome]:
     decided = recovery.decided_at if recovery.state == "cloudy_hold" else now
@@ -282,9 +293,10 @@ def _hold(state: StoreState, recovery: RecoveryEpisode, reason: str, now: dateti
 def _after_grant(state: StoreState, recovery: RecoveryEpisode, inputs: RecoveryInputs,
                  params: RecoveryParams) -> tuple[StoreState, RecoveryOutcome]:
     now = inputs.now
-    if recovery.restore_floors is None or recovery.hold_floor_pct is None:
+    managed = inputs.managed_floors is not None
+    if recovery.hold_floor_pct is None or (recovery.restore_floors is None and not managed):
         return _hold(state, recovery, "floors_unknown", now)
-    if inputs.live and floor_writes(recovery, inputs.floors) is None:
+    if not managed and inputs.live and floor_writes(recovery, inputs.floors) is None:
         return _hold(state, recovery, "floor_conflict", now)
 
     blocker = ("tomorrow_unknown" if inputs.tomorrow is None
@@ -298,8 +310,14 @@ def _after_grant(state: StoreState, recovery: RecoveryEpisode, inputs: RecoveryI
 
     restoring = replace(recovery, state="restoring", reason_code=None,
                         decided_at=now if recovery.state != "restoring" else recovery.decided_at)
-    done = (recovery.state == "restoring" if not inputs.live  # shadow: reported once
-            else floor_writes(restoring, inputs.floors) == [])
+    if managed:
+        # the plan was computed for the state in force when this cycle began: it is the
+        # normal table only if the episode was already restoring
+        done = recovery.state == "restoring" and (
+            not inputs.live or _floors_match(inputs.floors, inputs.managed_floors))
+    else:
+        done = (recovery.state == "restoring" if not inputs.live  # shadow: reported once
+                else floor_writes(restoring, inputs.floors) == [])
     if done:
         return replace(state, state_revision=state.state_revision + 1, recovery=None), \
             RecoveryOutcome("ended", "floors_restored")

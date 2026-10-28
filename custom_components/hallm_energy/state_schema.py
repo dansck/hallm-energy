@@ -490,9 +490,8 @@ class RecoveryEpisode:
     def __post_init__(self) -> None:
         if self.wait_until <= self.entered_at:
             raise StoreStateError("recovery.wait_until musi byt po entered_at")
-        if self.state == "restoring" and (self.restore_floors is None
-                                          or self.hold_floor_pct is None):
-            raise StoreStateError("recovery restoring vyzaduje restore_floors a hold_floor_pct")
+        if self.state == "restoring" and self.hold_floor_pct is None:
+            raise StoreStateError("recovery restoring vyzaduje hold_floor_pct")
         if self.restore_floors is not None and not all(
             0 <= f <= 100 for f in self.restore_floors
         ):

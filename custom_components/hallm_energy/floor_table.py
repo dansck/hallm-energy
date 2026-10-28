@@ -73,6 +73,19 @@ class FloorPlan:
     floors: tuple[float, ...]
     kinds: tuple[SlotKind, ...]
     reasons: tuple[str, ...] = field(default_factory=tuple)
+    reserve_pct: float = 0.0
+    # slots whose floor is below the reserve BY the morning exception / refill state
+    below_reserve_slots: tuple[int, ...] = ()
+
+    def sanity_error(self) -> str | None:
+        """A plan that must never be written: a floor below the reserve that no
+        overlay explains, or one outside 0..100."""
+        for i, floor in enumerate(self.floors):
+            if not 0 <= floor <= 100:
+                return f"slot{i + 1}:out_of_range"
+            if floor < self.reserve_pct and i not in self.below_reserve_slots:
+                return f"slot{i + 1}:below_reserve_without_exception"
+        return None
 
 
 def slot_intervals(starts: Sequence[time], now: datetime, tz: tzinfo
@@ -136,6 +149,7 @@ def floor_plan(params: FloorParams, ctx: FloorContext) -> FloorPlan:
     kinds: list[SlotKind] = []
     floors: list[float] = []
     reasons: list[str] = []
+    below: list[int] = []
     for i, interval in enumerate(intervals):
         kind = classify_slot(interval, ctx.now, ctx.tz, ctx.is_nt_at)
         kinds.append(kind)
@@ -156,19 +170,24 @@ def floor_plan(params: FloorParams, ctx: FloorContext) -> FloorPlan:
                 and kind != "unknown" \
                 and interval[0] < ctx.dip_window[1] and ctx.dip_window[0] < interval[1]:
             floor = params.dip_floor_pct
+            below.append(i)
             reasons.append(f"slot{i + 1}:morning_dip")
         elif ctx.phase == "pv_refill" and high and ctx.refill_floor_pct is not None:
             floor = min(params.reserve_pct, ceil5(ctx.refill_floor_pct))
+            below.append(i)
             reasons.append(f"slot{i + 1}:pv_refill")
 
         if ctx.grant_target_pct is not None:
             target = ceil5(ctx.grant_target_pct)
             floor = target if i == ctx.charging_slot else max(floor, target)
+            if floor >= params.reserve_pct and i in below:
+                below.remove(i)
             reasons.append(f"slot{i + 1}:grant")
         floors.append(floor)
     if "unknown" in kinds:
         reasons.append("schedule_unknown_for_some_slots")
-    return FloorPlan(tuple(floors), tuple(kinds), tuple(reasons))
+    return FloorPlan(tuple(floors), tuple(kinds), tuple(reasons),
+                     reserve_pct=params.reserve_pct, below_reserve_slots=tuple(below))
 
 
 def hold_floor_pct(
