@@ -42,7 +42,8 @@
           "battery_efficiency": "Battery efficiency",
           "error_margin_morning_kwh": "Morning error margin (kWh DC)",
           "grid_charge_rate_dc_kw": "Grid charge rate (kW DC)",
-          "budget_factor": "Budget backup factor"
+          "budget_factor": "Budget backup factor",
+          "pv_forecast_max_age_h": "PV forecast max age (h)"
         },
         "data_description": {
           "soc_entity": "Sensor with the battery state of charge (%).",
@@ -71,7 +72,7 @@
           "slot6_start_entity": "Start of time-of-use slot 6 (HHMM number).",
           "slot6_capacity_entity": "SOC floor and grid-charge target of slot 6 (%).",
           "slot6_charge_enable_entity": "Grid charging permission of slot 6.",
-          "pv_forecast_entity": "Sensor with profile_today_* / profile_tomorrow_* attributes (timestamps, W per 15 minutes). Without it PV is never credited.",
+          "pv_forecast_entity": "Sensor with issued_at (when the source produced the forecast) and profile_today_* / profile_tomorrow_* attributes (timestamps, W per 15 minutes). Without a usable one PV is never credited.",
           "house_load_profile_topic": "Retained MQTT topic with the house load profile snapshot. Without a usable profile PV is never credited and recovery is conservative.",
           "topology_epoch": "Profiles from another topology are rejected.",
           "pv_correction": "Applied exactly once to the forecast (conservative P10).",
@@ -82,7 +83,8 @@
           "battery_efficiency": "Charge and discharge efficiency for the simulation.",
           "error_margin_morning_kwh": "Extra energy PV must add on top of the reserve before waiting is accepted.",
           "grid_charge_rate_dc_kw": "Assumed rate for sizing the off-peak window.",
-          "budget_factor": "Grant closes once usage reaches budget × factor (backup to the SOC stop)."
+          "budget_factor": "Grant closes once usage reaches budget × factor (backup to the SOC stop).",
+          "pv_forecast_max_age_h": "Older forecasts (by their issued_at) are not credited."
         }
       }
     },
@@ -136,7 +138,8 @@
           "battery_efficiency": "Battery efficiency",
           "error_margin_morning_kwh": "Morning error margin (kWh DC)",
           "grid_charge_rate_dc_kw": "Grid charge rate (kW DC)",
-          "budget_factor": "Budget backup factor"
+          "budget_factor": "Budget backup factor",
+          "pv_forecast_max_age_h": "PV forecast max age (h)"
         },
         "data_description": {
           "soc_entity": "Sensor with the battery state of charge (%).",
@@ -165,7 +168,7 @@
           "slot6_start_entity": "Start of time-of-use slot 6 (HHMM number).",
           "slot6_capacity_entity": "SOC floor and grid-charge target of slot 6 (%).",
           "slot6_charge_enable_entity": "Grid charging permission of slot 6.",
-          "pv_forecast_entity": "Sensor with profile_today_* / profile_tomorrow_* attributes (timestamps, W per 15 minutes). Without it PV is never credited.",
+          "pv_forecast_entity": "Sensor with issued_at (when the source produced the forecast) and profile_today_* / profile_tomorrow_* attributes (timestamps, W per 15 minutes). Without a usable one PV is never credited.",
           "house_load_profile_topic": "Retained MQTT topic with the house load profile snapshot. Without a usable profile PV is never credited and recovery is conservative.",
           "topology_epoch": "Profiles from another topology are rejected.",
           "pv_correction": "Applied exactly once to the forecast (conservative P10).",
@@ -176,7 +179,8 @@
           "battery_efficiency": "Charge and discharge efficiency for the simulation.",
           "error_margin_morning_kwh": "Extra energy PV must add on top of the reserve before waiting is accepted.",
           "grid_charge_rate_dc_kw": "Assumed rate for sizing the off-peak window.",
-          "budget_factor": "Grant closes once usage reaches budget × factor (backup to the SOC stop)."
+          "budget_factor": "Grant closes once usage reaches budget × factor (backup to the SOC stop).",
+          "pv_forecast_max_age_h": "Older forecasts (by their issued_at) are not credited."
         }
       }
     },

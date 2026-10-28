@@ -38,6 +38,7 @@ CONF_ETA = "battery_efficiency"
 CONF_E_ERR_MORNING = "error_margin_morning_kwh"
 CONF_CHARGE_RATE = "grid_charge_rate_dc_kw"
 CONF_BUDGET_FACTOR = "budget_factor"
+CONF_PV_MAX_AGE = "pv_forecast_max_age_h"
 
 # name: (default, minimum, maximum)
 NUMBER_OPTIONS: dict[str, tuple[float, float, float]] = {
@@ -50,6 +51,7 @@ NUMBER_OPTIONS: dict[str, tuple[float, float, float]] = {
     CONF_E_ERR_MORNING: (2.0, 0.0, 10.0),
     CONF_CHARGE_RATE: (1.0, 0.1, 20.0),
     CONF_BUDGET_FACTOR: (1.25, 1.1, 1.5),
+    CONF_PV_MAX_AGE: (6.0, 1.0, 24.0),
     CONF_TOPOLOGY_EPOCH: (1, 1, 99),
 }
 
@@ -94,6 +96,7 @@ class EnergyConfig:
     profile_topic: str | None = None
     pv_correction: float = NUMBER_OPTIONS[CONF_PV_CORRECTION][0]
     budget_factor: float = NUMBER_OPTIONS[CONF_BUDGET_FACTOR][0]
+    pv_max_age_h: float = NUMBER_OPTIONS[CONF_PV_MAX_AGE][0]
     recovery: RecoveryParams | None = None
 
     @property
@@ -160,6 +163,7 @@ class EnergyConfig:
             profile_topic=topic,
             pv_correction=numbers[CONF_PV_CORRECTION],
             budget_factor=numbers[CONF_BUDGET_FACTOR],
+            pv_max_age_h=numbers[CONF_PV_MAX_AGE],
             recovery=RecoveryParams(
                 reserve_pct=numbers[CONF_RESERVE],
                 recovery_target_pct=numbers[CONF_RECOVERY_TARGET],

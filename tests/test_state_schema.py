@@ -412,12 +412,17 @@ def _closed_raw(**rec):
 
 
 def test_after_grant_states_need_the_closed_episode():
-    state = parse_store_state(_closed_raw(state="cloudy_hold", floors_before=[10] * 5 + [20]))
-    assert state.recovery.floors_before == (10.0,) * 5 + (20.0,)
-    assert parse_store_state(_closed_raw(state="restoring", floors_before=[10] * 6)) is not None
-    with pytest.raises(StoreStateError):  # restoring without saved floors
+    state = parse_store_state(_closed_raw(state="cloudy_hold", restore_floors=[20] * 6,
+                                          hold_floor_pct=25))
+    assert state.recovery.restore_floors == (20.0,) * 6
+    assert state.recovery.hold_floor_pct == 25
+    assert parse_store_state(_closed_raw(state="restoring", restore_floors=[20] * 6,
+                                         hold_floor_pct=25)) is not None
+    with pytest.raises(StoreStateError):  # restoring without restore floors / hold floor
         parse_store_state(_closed_raw(state="restoring"))
+    with pytest.raises(StoreStateError):
+        parse_store_state(_closed_raw(state="restoring", restore_floors=[20] * 6))
     with pytest.raises(StoreStateError):  # hold while the grant is still open
         parse_store_state(_raw(recovery=_recovery(state="cloudy_hold")))
     with pytest.raises(StoreStateError):
-        parse_store_state(_closed_raw(state="cloudy_hold", floors_before=[150] * 6))
+        parse_store_state(_closed_raw(state="cloudy_hold", restore_floors=[150] * 6))

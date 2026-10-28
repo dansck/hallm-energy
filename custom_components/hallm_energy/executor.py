@@ -25,6 +25,7 @@ from homeassistant.core import HomeAssistant
 from .device_io import DeviceIO, WriteResult
 from .energy_core.grant import DEFAULT_GRANT_BUDGET_FACTOR, CounterReading
 from .lifecycle import confirm_closed, record_step_result, step_grant
+from .recovery_flow import floor_writes
 from .runtime import EnergyRuntime
 from .slot_plan import (
     Op,
@@ -34,7 +35,6 @@ from .slot_plan import (
     enable_ops,
     floors_at_least,
     is_prepared,
-    matches,
     prepare_ops,
     stop_ops,
 )
@@ -264,30 +264,28 @@ class GrantExecutor:
         return True
 
     async def _restore_floors(self, report: CycleReport) -> None:
-        """After a recovery grant (`restoring`): write the saved floors back,
-        only with charging verifiably off and no grant — never while enabling."""
+        """After a recovery grant: keep the hold floor (`cloudy_hold`, raising
+        back a floor we had already restored) or write the restore floors
+        (`restoring`). Only with charging verifiably off and no grant, never
+        while enabling; a floor changed from outside blocks every write."""
         state = self.runtime.state
         recovery = None if state is None else state.recovery
         if (
             state is None
             or state.active_grant is not None
             or recovery is None
-            or recovery.state != "restoring"
-            or recovery.floors_before is None
+            or recovery.state not in ("cloudy_hold", "restoring")
         ):
             return
         readback = self.io.read_slots(self.entities)
         if readback.charging_enabled is not False:
             return
-        ops = [
-            Op(entity, float(floor))
-            for entity, floor, current in zip(self.entities.slot_capacity,
-                                              recovery.floors_before,
-                                              readback.slot_capacity, strict=True)
-            if not matches(Op(entity, float(floor)), current)
-        ]
-        if not ops:
+        planned = floor_writes(recovery, readback.slot_capacity)
+        if not planned:
+            if planned is None and report.live:
+                report.error = "floor_conflict: floors changed from outside, nothing written"
             return
+        ops = [Op(self.entities.slot_capacity[i], float(value)) for i, value in planned]
         if report.live:
             report.writes += await self._run(ops, self.safety_revision, enabling=False)
         else:

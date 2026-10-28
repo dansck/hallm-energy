@@ -113,6 +113,7 @@ class StatusSensor(SensorEntity):
                 else tick.recovery.reason,
                 "pv_not_credited_because": None if tick.recovery is None
                 else tick.recovery.pv_blocker,
+                "pv_forecast_problem": tick.pv_forecast,
             }
             profile = controller.profiles.profile
             attrs |= {

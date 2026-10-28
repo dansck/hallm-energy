@@ -270,6 +270,7 @@ async def test_recovery_waits_for_pv_with_a_usable_profile(storage_hass, inverte
     storage_hass.states.async_set("sensor.bms_soc", "13.0")
     first = NOW.replace(hour=0, minute=0)
     storage_hass.states.async_set("sensor.pv", "0", {
+        "issued_at": (NOW - timedelta(hours=1)).isoformat()} | {
         f"profile_{day}_{kind}": (
             [(first + timedelta(days=i, minutes=15 * k)).isoformat() for k in range(96)]
             if kind == "timestamps" else [8000 if 32 <= k < 56 else 0 for k in range(96)])

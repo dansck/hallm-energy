@@ -35,10 +35,13 @@ In place:
   current, complete, good-quality profile. Otherwise a grid grant to the
   recovery target is prepared over the next off-peak steps, one per episode;
   an expired window is extended with the same identity and budget;
-- after the grant: the floors stay at the target while tomorrow's corrected
-  PV minus the house load is negative or cannot be judged (no repeated
-  discharge and re-buy); otherwise the slot floors saved when the grant was
-  prepared are written back (charging verifiably off) and the episode ends.
+- after the grant, decided again every cycle: the floors stay at the target
+  while tomorrow's corrected PV minus the house load is negative or cannot be
+  judged (no repeated discharge and re-buy); otherwise the floors found when
+  the grant was prepared are written back — never below the reserve — with
+  charging verifiably off, and the episode ends. Losing the reason raises an
+  already restored floor back; a floor changed from outside blocks all floor
+  writes (diagnosed, not overwritten).
 
 In shadow, grants are created and tracked like in live mode, but nothing is
 written to the inverter.
@@ -59,7 +62,7 @@ entities (all of them can be changed later in the integration's options):
 | Grid charge master switch | switch |
 | Per slot (6): start (`HHMM`), capacity (%), charge enable | number, number, switch |
 | Shadow switch, feature switch | input booleans |
-| PV forecast (optional) | sensor with `profile_today_*` / `profile_tomorrow_*` attributes |
+| PV forecast (optional) | sensor with `issued_at` and `profile_today_*` / `profile_tomorrow_*` attributes; PV is credited only with a documented, recent issue time |
 | House load profile topic (optional) | retained MQTT topic |
 
 Recovery parameters (reserve, target, wait for PV, battery capacity and

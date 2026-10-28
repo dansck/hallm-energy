@@ -61,6 +61,7 @@ class TickStatus:
     writes: list[WriteResult] = field(default_factory=list)
     error: str | None = None
     recovery: RecoveryOutcome | None = None
+    pv_forecast: str | None = None  # why the PV forecast is not usable
 
 
 class EnergyController:
@@ -200,17 +201,19 @@ class EnergyController:
             entities = replace(self.config.slot_entities, slot_starts=snapshot.slot_starts)
             floor = readback.slot_capacity[current_slot(entities, snapshot.local_time)]
         now = snapshot.now
+        pv, status.pv_forecast = pv_forecast(self.hass, self.config, now)
         inputs = RecoveryInputs(
             now=now,
             soc_pct=snapshot.soc_pct if snapshot.telemetry_valid else None,
             current_floor_pct=floor,
             reading=snapshot.reading,
             reading_epoch=snapshot.reading_epoch,
-            pv_ac_kw=pv_forecast(self.hass, self.config, now),
+            pv_ac_kw=pv,
             profile=self.profiles.profile,
             nt_steps=offpeak_steps(schedule_intervals(self.hass, self.config, now), now),
             floors=readback.slot_capacity,
             tomorrow=_local_tomorrow(now),
+            live=status.live,
         )
         state = self.runtime.state
         new_state, outcome = plan_recovery(state, inputs, params, new_id=lambda: uuid4().hex,

@@ -472,9 +472,10 @@ class PendingAuditEvent:
 class RecoveryEpisode:
     """One recovery episode below the reserve. `wait_until` is anchored on
     entry and never moves; `grid_recovery` = its grant exists (same episode).
-    After the grant closed: `cloudy_hold` keeps the floors at the target,
-    `restoring` writes back `floors_before` (slot floors when the grant was
-    prepared); the episode ends once they read back."""
+    After the grant closed: `cloudy_hold` keeps the floors at `hold_floor_pct`
+    (the grant target), `restoring` writes `restore_floors` (slot floors when
+    the grant was prepared, never below the reserve); the episode ends once
+    they read back."""
 
     episode_id: str
     entered_at: datetime
@@ -482,17 +483,21 @@ class RecoveryEpisode:
     state: RecoveryValue
     decided_at: datetime
     reason_code: str | None = None  # why PV could not be credited, or the grant could not start
-    floors_before: tuple[float, ...] | None = None
+    restore_floors: tuple[float, ...] | None = None
+    hold_floor_pct: float | None = None
 
     def __post_init__(self) -> None:
         if self.wait_until <= self.entered_at:
             raise StoreStateError("recovery.wait_until musi byt po entered_at")
-        if self.state == "restoring" and self.floors_before is None:
-            raise StoreStateError("recovery restoring vyzaduje floors_before")
-        if self.floors_before is not None and not all(
-            0 <= f <= 100 for f in self.floors_before
+        if self.state == "restoring" and (self.restore_floors is None
+                                          or self.hold_floor_pct is None):
+            raise StoreStateError("recovery restoring vyzaduje restore_floors a hold_floor_pct")
+        if self.restore_floors is not None and not all(
+            0 <= f <= 100 for f in self.restore_floors
         ):
-            raise StoreStateError("recovery.floors_before mimo 0..100")
+            raise StoreStateError("recovery.restore_floors mimo 0..100")
+        if self.hold_floor_pct is not None and not 0 < self.hold_floor_pct <= 100:
+            raise StoreStateError("recovery.hold_floor_pct mimo 0..100")
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -502,7 +507,8 @@ class RecoveryEpisode:
             "state": self.state,
             "decided_at": _epoch(self.decided_at),
             "reason_code": self.reason_code,
-            "floors_before": None if self.floors_before is None else list(self.floors_before),
+            "restore_floors": None if self.restore_floors is None else list(self.restore_floors),
+            "hold_floor_pct": self.hold_floor_pct,
         }
 
     @staticmethod
@@ -515,7 +521,9 @@ class RecoveryEpisode:
             state=_require_enum(raw.get("state"), _RECOVERY_VALUES, f"{where}.state"),
             decided_at=_parse_epoch(raw.get("decided_at"), f"{where}.decided_at"),
             reason_code=_require_optional_str(raw.get("reason_code"), f"{where}.reason_code"),
-            floors_before=_parse_floors(raw.get("floors_before"), f"{where}.floors_before"),
+            restore_floors=_parse_floors(raw.get("restore_floors"), f"{where}.restore_floors"),
+            hold_floor_pct=None if raw.get("hold_floor_pct") is None
+            else _require_number(raw.get("hold_floor_pct"), f"{where}.hold_floor_pct"),
         )
 
 

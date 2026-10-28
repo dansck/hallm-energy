@@ -317,37 +317,58 @@ def test_slot_entities_validation():
 # --- floors after a recovery grant -------------------------------------------------------
 
 
-def _restoring_state():
-    from tests.test_recovery_flow import FLOORS, _closed
+def _after_grant_state(kind="restoring"):
+    from tests.test_recovery_flow import _closed
 
     _, closed = _closed()
-    restoring = replace(closed.recovery, state="restoring")
-    return set_reconcile(replace(closed, recovery=restoring), "ready", None), FLOORS
+    recovery = replace(closed.recovery, state=kind)
+    return set_reconcile(replace(closed, recovery=recovery), "ready", None)
 
 
-async def test_restoring_writes_saved_floors_when_live(storage_hass, inverter):
-    state, floors = _restoring_state()
-    executor = await _executor(storage_hass, state=state)
+def _raise_all(hass, value="25.0"):
+    for cap in CAPS:
+        hass.states.async_set(cap, value)
+
+
+async def test_restoring_writes_restore_floors_when_live(storage_hass, inverter):
+    _raise_all(storage_hass)
+    executor = await _executor(storage_hass, state=_after_grant_state())
     report = await executor.async_cycle(_snapshot(soc=25.0))
-    assert [float(inverter.value(c)) for c in CAPS] == list(floors)
+    assert [float(inverter.value(c)) for c in CAPS] == [20.0] * 6  # never below the reserve
     assert all(w.outcome == "confirmed" for w in report.writes)
-    # floors only; slot 6 already reads 20
-    assert {w.op.entity_id for w in report.writes} == set(CAPS[:5])
+    assert {w.op.entity_id for w in report.writes} == set(CAPS)
+
+
+async def test_hold_raises_back_a_partially_restored_floor(storage_hass, inverter):
+    _raise_all(storage_hass)
+    storage_hass.states.async_set(CAPS[0], "20.0")  # restored before the forecast turned
+    executor = await _executor(storage_hass, state=_after_grant_state("cloudy_hold"))
+    await executor.async_cycle(_snapshot(soc=25.0))
+    assert [float(inverter.value(c)) for c in CAPS] == [25.0] * 6
+
+
+async def test_floor_changed_from_outside_blocks_every_write(storage_hass, inverter):
+    _raise_all(storage_hass)
+    storage_hass.states.async_set(CAPS[2], "15.0")
+    executor = await _executor(storage_hass, state=_after_grant_state())
+    report = await executor.async_cycle(_snapshot(soc=25.0))
+    assert inverter.calls == [] and "floor_conflict" in report.error
 
 
 async def test_restoring_in_shadow_only_reports(storage_hass, inverter):
-    state, floors = _restoring_state()
-    executor = await _executor(storage_hass, state=state, gates=_gates(storage_hass, shadow="on"))
+    _raise_all(storage_hass)
+    executor = await _executor(storage_hass, state=_after_grant_state(),
+                               gates=_gates(storage_hass, shadow="on"))
     report = await executor.async_cycle(_snapshot(soc=25.0))
     assert inverter.calls == []
-    assert [op.value for op in report.intents if op.entity_id in CAPS] == [
-        f for f in floors if f != 20.0]
+    assert [op.value for op in report.intents if op.entity_id in CAPS] == [20.0] * 6
 
 
 async def test_restoring_waits_while_charging_is_on(storage_hass, inverter):
-    state, _ = _restoring_state()
+    _raise_all(storage_hass)
     storage_hass.states.async_set(GRID, "on")
     storage_hass.states.async_set(CES[NIGHT_SLOT], "on")
-    executor = await _executor(storage_hass, state=state, gates=_gates(storage_hass, shadow="on"))
+    executor = await _executor(storage_hass, state=_after_grant_state(),
+                               gates=_gates(storage_hass, shadow="on"))
     report = await executor.async_cycle(_snapshot(soc=25.0))
     assert not [op for op in report.intents if op.entity_id in CAPS]

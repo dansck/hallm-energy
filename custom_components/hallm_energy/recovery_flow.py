@@ -12,11 +12,16 @@
 * With a grant: an expired window is extended over future off-peak steps for
   the remaining budget, same ID. Without a grant the episode ends once the
   reserve is restored.
-* After the grant closed (`floor_after_recovery`): `cloudy_hold` keeps the
-  floors at the target while tomorrow's corrected PV minus the house load is
-  negative — or cannot be judged (no usable profile/forecast); otherwise
-  `restoring` writes back the slot floors saved when the grant was prepared,
-  and the episode ends once they read back. Unknown saved floors = hold.
+* After the grant closed (`floor_after_recovery`): every cycle decides anew.
+  `cloudy_hold` keeps the floors at the grant target while tomorrow's
+  corrected PV minus the house load is negative — or cannot be judged (no
+  usable profile/forecast); otherwise `restoring` writes the restore floors
+  (the floors found when the grant was prepared, never below the reserve —
+  a lower floor needs the explicit morning exception, not a found value).
+  Losing the reason (inputs gone, cloudy again) returns to `cloudy_hold`,
+  which raises any already-restored floor back. A floor that is neither the
+  hold nor the restore value was changed from outside: nothing is written,
+  the episode holds with `floor_conflict`. Unknown saved floors = hold.
 """
 
 from __future__ import annotations
@@ -61,6 +66,7 @@ class RecoveryInputs:
     nt_steps: Sequence[datetime]  # future off-peak step starts per the schedule
     floors: tuple[float | None, ...] = ()  # current slot floors (readback)
     tomorrow: tuple[datetime, datetime] | None = None  # local tomorrow as UTC [start, end)
+    live: bool = True  # shadow: floors were never raised, so they are not compared
 
 
 @dataclass(frozen=True)
@@ -183,9 +189,10 @@ def plan_recovery(
         deadline_at=recovery.wait_until,
     )
     floors = inputs.floors
-    floors_before = tuple(floors) if floors and None not in floors else None
+    restore = (tuple(max(f, params.reserve_pct) for f in floors)
+               if floors and None not in floors else None)
     episode = replace(recovery, state="grid_recovery", decided_at=now, reason_code=blocker,
-                      floors_before=floors_before)
+                      restore_floors=restore, hold_floor_pct=decision.grant.identity.target_pct)
     return replace(prepared, recovery=episode), RecoveryOutcome("grant_prepared", None, blocker)
 
 
@@ -222,23 +229,41 @@ def tomorrow_balance_kwh(pv: Callable[[datetime], float], profile: HouseLoadProf
     return total
 
 
+def floor_writes(recovery: RecoveryEpisode,
+                 floors: Sequence[float | None]) -> list[tuple[int, float]] | None:
+    """Slot floors to write for an episode after its grant (index, value);
+    `None` = conflict (a floor that is neither the hold nor the restore value,
+    or unreadable) — then nothing may be written. Shared by the decision and
+    the executor so neither writes over an outside change."""
+    restore, hold = recovery.restore_floors, recovery.hold_floor_pct
+    if restore is None or hold is None or len(floors) != len(restore):
+        return None
+    writes = []
+    for i, (current, back) in enumerate(zip(floors, restore, strict=True)):
+        target = back if recovery.state == "restoring" else max(hold, back)
+        known = (hold, back)
+        if current is None or not any(abs(current - k) <= CAPACITY_TOLERANCE_PCT
+                                      for k in (*known, target)):
+            return None
+        if abs(current - target) > CAPACITY_TOLERANCE_PCT:
+            writes.append((i, target))
+    return writes
+
+
+def _hold(state: StoreState, recovery: RecoveryEpisode, reason: str, now: datetime,
+          blocker: str | None = None) -> tuple[StoreState, RecoveryOutcome]:
+    decided = recovery.decided_at if recovery.state == "cloudy_hold" else now
+    held = replace(recovery, state="cloudy_hold", reason_code=reason, decided_at=decided)
+    return _with_recovery(state, held), RecoveryOutcome("hold", reason, blocker)
+
+
 def _after_grant(state: StoreState, recovery: RecoveryEpisode, inputs: RecoveryInputs,
                  params: RecoveryParams) -> tuple[StoreState, RecoveryOutcome]:
     now = inputs.now
-    before = recovery.floors_before
-    if before is None:
-        return _with_recovery(state, replace(recovery, state="cloudy_hold",
-                                             reason_code="floors_unknown")), \
-            RecoveryOutcome("hold", "floors_unknown")
-    if recovery.state == "restoring":
-        current = inputs.floors
-        if len(current) == len(before) and all(
-            c is not None and abs(c - b) <= CAPACITY_TOLERANCE_PCT
-            for c, b in zip(current, before, strict=True)
-        ):
-            return replace(state, state_revision=state.state_revision + 1, recovery=None), \
-                RecoveryOutcome("ended", "floors_restored")
-        return state, RecoveryOutcome("restoring")
+    if recovery.restore_floors is None or recovery.hold_floor_pct is None:
+        return _hold(state, recovery, "floors_unknown", now)
+    if inputs.live and floor_writes(recovery, inputs.floors) is None:
+        return _hold(state, recovery, "floor_conflict", now)
 
     blocker = None
     if inputs.tomorrow is None:
@@ -249,13 +274,17 @@ def _after_grant(state: StoreState, recovery: RecoveryEpisode, inputs: RecoveryI
         if blocker is None and inputs.pv_ac_kw is None:
             blocker = "pv_forecast_unusable"
     if blocker is not None:
-        return _with_recovery(state, replace(recovery, reason_code=blocker)), \
-            RecoveryOutcome("hold", blocker, blocker)
+        return _hold(state, recovery, blocker, now, blocker)
     assert inputs.tomorrow is not None and inputs.pv_ac_kw is not None
     assert inputs.profile is not None
-    balance = tomorrow_balance_kwh(inputs.pv_ac_kw, inputs.profile, *inputs.tomorrow)
-    if balance < 0:
-        return _with_recovery(state, replace(recovery, reason_code="cloudy")), \
-            RecoveryOutcome("hold", "cloudy")
-    return _with_recovery(state, replace(recovery, state="restoring", decided_at=now,
-                                         reason_code=None)), RecoveryOutcome("restoring")
+    if tomorrow_balance_kwh(inputs.pv_ac_kw, inputs.profile, *inputs.tomorrow) < 0:
+        return _hold(state, recovery, "cloudy", now)
+
+    restoring = replace(recovery, state="restoring", reason_code=None,
+                        decided_at=now if recovery.state != "restoring" else recovery.decided_at)
+    done = (recovery.state == "restoring" if not inputs.live  # shadow: reported once
+            else floor_writes(restoring, inputs.floors) == [])
+    if done:
+        return replace(state, state_revision=state.state_revision + 1, recovery=None), \
+            RecoveryOutcome("ended", "floors_restored")
+    return _with_recovery(state, restoring), RecoveryOutcome("restoring")

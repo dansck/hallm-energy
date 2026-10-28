@@ -22,6 +22,7 @@ from custom_components.hallm_energy.profile_receiver import ProfileReceiver
 from custom_components.hallm_energy.recovery_flow import (
     RecoveryInputs,
     RecoveryParams,
+    floor_writes,
     plan_recovery,
 )
 from custom_components.hallm_energy.state_schema import parse_store_state
@@ -237,15 +238,22 @@ def _closed(floors=FLOORS):
     return state, confirm_closed(result.state, now=t)
 
 
-def _after(now, *, pv=_sunny, profile="default", floors=RAISED, soc=25.0):
+RESTORE = (20.0,) * 6  # found floors, never below the reserve
+
+
+def _after(now, *, pv=_sunny, profile="default", floors=RAISED, soc=25.0, live=True):
     profile = _profile(now=now, hours=60) if profile == "default" else profile
     return replace(_inputs(now=now, soc=soc, pv=pv, profile=profile), floors=floors,
-                   tomorrow=TOMORROW)
+                   tomorrow=TOMORROW, live=live)
 
 
-def test_grant_creation_saves_the_floors():
+def test_grant_creation_saves_restore_floors_never_below_reserve():
     state, _ = _plan(empty_state(), replace(_inputs(pv=lambda _t: 0.0), floors=FLOORS))
-    assert state.recovery.floors_before == FLOORS
+    assert state.recovery.restore_floors == RESTORE  # 10 % found -> 20 % (reserve)
+    assert state.recovery.hold_floor_pct == 25
+    higher, _ = _plan(empty_state(), replace(_inputs(pv=lambda _t: 0.0),
+                                             floors=(30.0,) * 5 + (20.0,)))
+    assert higher.recovery.restore_floors == (30.0,) * 5 + (20.0,)
 
 
 def test_closing_the_grant_holds_floors_until_decided():
@@ -285,7 +293,7 @@ def test_sunny_tomorrow_restores_then_ends_when_floors_read_back():
     assert outcome.action == "restoring" and restoring.recovery.state == "restoring"
     still, outcome = _plan(restoring, _after(t + timedelta(minutes=1)))  # floors not back yet
     assert outcome.action == "restoring" and still == restoring
-    done, outcome = _plan(restoring, _after(t + timedelta(minutes=2), floors=FLOORS))
+    done, outcome = _plan(restoring, _after(t + timedelta(minutes=2), floors=RESTORE))
     assert outcome.action == "ended" and done.recovery is None
     # a later drop is a new episode with a new id
     new_state, outcome = _plan(done, _inputs(now=t + timedelta(days=1), pv=lambda _t: 0.0))
@@ -293,9 +301,56 @@ def test_sunny_tomorrow_restores_then_ends_when_floors_read_back():
     assert new_state.recovery.episode_id != prepared.recovery.episode_id
 
 
+@pytest.mark.parametrize(("change", "reason"), [
+    ({"pv": None}, "pv_forecast_unusable"),
+    ({"profile": None}, "profile_missing"),
+    ({"pv": lambda _t: 0.0}, "cloudy"),
+])
+def test_restoring_is_revalidated_and_falls_back_to_hold(change, reason):
+    _, closed = _closed()
+    t = NOW + timedelta(hours=4)
+    restoring, _ = _plan(closed, _after(t))
+    partial = (20.0, 20.0, 25.0, 25.0, 25.0, 25.0)  # restore interrupted half way
+    later = t + timedelta(hours=4)
+    held, outcome = _plan(restoring, _after(later, floors=partial, **change))
+    assert outcome.action == "hold" and outcome.reason == reason
+    assert held.recovery.state == "cloudy_hold"
+    # the already lowered floors go back up to the hold floor
+    assert floor_writes(held.recovery, partial) == [(0, 25.0), (1, 25.0)]
+
+
+def test_restart_does_not_continue_restoring_blindly():
+    _, closed = _closed()
+    t = NOW + timedelta(hours=4)
+    restoring, _ = _plan(closed, _after(t))
+    restored = parse_store_state(json.loads(json.dumps(restoring.to_dict())))
+    held, outcome = _plan(restored, _after(t + timedelta(hours=1), profile=None))
+    assert outcome.action == "hold"
+
+
+def test_floor_changed_from_outside_is_a_conflict_not_overwritten():
+    _, closed = _closed()
+    t = NOW + timedelta(hours=4)
+    manual = (25.0, 15.0, 25.0, 25.0, 25.0, 25.0)
+    held, outcome = _plan(closed, _after(t, floors=manual))
+    assert outcome.action == "hold" and outcome.reason == "floor_conflict"
+    assert floor_writes(held.recovery, manual) is None
+
+
+def test_shadow_reports_restore_once_then_ends():
+    _, closed = _closed()
+    t = NOW + timedelta(hours=4)
+    shadow_floors = FLOORS  # never raised in shadow: not a conflict there
+    restoring, outcome = _plan(closed, _after(t, floors=shadow_floors, live=False))
+    assert outcome.action == "restoring"
+    done, outcome = _plan(restoring, _after(t + timedelta(seconds=30), floors=shadow_floors,
+                                            live=False))
+    assert outcome.action == "ended" and done.recovery is None
+
+
 def test_unknown_saved_floors_hold_for_good():
     _, closed = _closed(floors=(10.0, None, 10.0, 10.0, 10.0, 20.0))
-    assert closed.recovery.floors_before is None
+    assert closed.recovery.restore_floors is None
     held, outcome = _plan(closed, _after(NOW + timedelta(hours=4)))
     assert outcome.action == "hold" and outcome.reason == "floors_unknown"
 
