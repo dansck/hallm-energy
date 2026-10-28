@@ -125,10 +125,21 @@ class EnergyController:
             except Exception as exc:  # the loop must survive; nothing enables after it
                 _LOGGER.exception("tick failed")
                 status.result, status.error = "error", repr(exc)
-            await self.outbox.async_deliver(now)
             self.status = status
             self._notify()
             return status
+
+    async def async_deliver_audit(self) -> None:
+        """One audit delivery round (own worker; takes the control lock only briefly)."""
+        await self.outbox.async_deliver(self._lock, dt_util.utcnow)
+        self._notify()
+
+    async def async_discard_audit(self) -> int:
+        """Explicit removal of the audit backlog — serialized with the control loop."""
+        async with self._lock:
+            count = await self.outbox.async_discard()
+        self._notify()
+        return count
 
     async def async_handle_ack(self, payload: str | bytes) -> None:
         """Acknowledgement from the audit receiver — serialized with the control loop."""
@@ -223,21 +234,28 @@ class EnergyController:
         params = self.config.morning
         if params is None:
             return True
-        relay = self.hass.states.get(self.config.grid_relay_entity) \
-            if self.config.grid_relay_entity else None
         inputs = MorningInputs(
             now=snapshot.now,
             tz=dt_util.get_default_time_zone(),
             soc_pct=snapshot.soc_pct if snapshot.telemetry_valid else None,
             profile=self.profiles.profile,
             pv=self.pv_forecasts.forecast,
-            grid_present=relay is not None and relay.state == "on",
+            grid_present=self._grid_present() is True,
             in_recovery=self.runtime.state.recovery is not None,
         )
         state = self.runtime.state
         new_state, outcome = plan_morning(state, inputs, params)
         status.morning = outcome
         return new_state == state or await self._commit(new_state, status)
+
+    def _grid_present(self) -> bool | None:
+        """`None` when no grid relay is configured (not known). Configured but not `on`
+        (off, unavailable, unknown) counts as the grid being absent: nothing is assumed."""
+        entity = self.config.grid_relay_entity
+        if entity is None:
+            return None
+        state = self.hass.states.get(entity)
+        return state is not None and state.state == "on"
 
     def _report_floors(self, snapshot: Snapshot, readback: Readback, status: TickStatus
                        ) -> FloorPlan | None:
@@ -324,6 +342,7 @@ class EnergyController:
             live=status.live,
             managed_floors=self._managed_floors(snapshot, status),
             audit_full=self.outbox.full,
+            grid_present=self._grid_present(),
         )
         state = self.runtime.state
         new_state, outcome = plan_recovery(state, inputs, params, new_id=lambda: uuid4().hex,

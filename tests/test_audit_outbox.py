@@ -3,6 +3,7 @@ restart, MQTT failure, disabled audit and the capacity gate for NEW grants."""
 
 from __future__ import annotations
 
+import asyncio
 import json
 from dataclasses import replace
 from datetime import timedelta
@@ -49,6 +50,10 @@ async def _runtime(hass, state=None):
     return runtime
 
 
+async def _deliver(box, now):
+    await box.async_deliver(asyncio.Lock(), lambda: now)
+
+
 def _ack(*ids):
     return json.dumps(build_ack(list(ids), T0))
 
@@ -78,8 +83,8 @@ async def test_event_content_is_identical_on_every_delivery(storage_hass):
     runtime = await _runtime(storage_hass)
     bus = Bus()
     box = AuditOutbox(runtime, TOPIC, bus.publish)
-    await box.async_deliver(T0)
-    await box.async_deliver(T0 + RESEND_AFTER)
+    await _deliver(box, T0)
+    await _deliver(box, T0 + RESEND_AFTER)
     first, second = (parse_batch(b) for _, b in bus.sent)
     assert first.batch_id != second.batch_id and first.sent_at != second.sent_at
     assert [e.canonical_content() for e in first.events] == [
@@ -94,12 +99,12 @@ async def test_delivery_resend_and_removal_only_on_ack(storage_hass):
     bus = Bus()
     box = AuditOutbox(runtime, TOPIC, bus.publish)
     pending = [e.event_id for e in runtime.state.pending_audit]
-    await box.async_deliver(T0)
+    await _deliver(box, T0)
     assert bus.ids() == pending and bus.sent[0][0] == TOPIC
-    await box.async_deliver(T0 + timedelta(minutes=1))
+    await _deliver(box, T0 + timedelta(minutes=1))
     assert len(bus.sent) == 1  # not resent too early, and publishing is not an acknowledgement
     assert [e.event_id for e in runtime.state.pending_audit] == pending
-    await box.async_deliver(T0 + RESEND_AFTER)
+    await _deliver(box, T0 + RESEND_AFTER)
     assert bus.ids() == pending * 2  # still unacknowledged: delivered again, same ids
     await box.async_handle_ack(_ack(pending[0], "unknown-id"), T0)
     assert [e.event_id for e in runtime.state.pending_audit] == pending[1:]
@@ -123,7 +128,7 @@ async def test_unacknowledged_events_survive_a_restart_and_are_delivered_again(s
                                                           key=STORAGE_KEY))
     await restarted.async_start(known_installation_id="inst-1", new_installation_id=lambda: "x")
     bus = Bus()
-    await AuditOutbox(restarted, TOPIC, bus.publish).async_deliver(T0)
+    await _deliver(AuditOutbox(restarted, TOPIC, bus.publish), T0)
     assert bus.ids() == pending
 
 
@@ -132,10 +137,10 @@ async def test_broker_failure_keeps_the_events_and_retries(storage_hass):
     bus = Bus()
     bus.fail = True
     box = AuditOutbox(runtime, TOPIC, bus.publish)
-    await box.async_deliver(T0)
+    await _deliver(box, T0)
     assert "ConnectionError" in box.last_error and runtime.state.pending_audit
     bus.fail = False
-    await box.async_deliver(T0 + timedelta(seconds=30))  # not "sent": retried at once
+    await _deliver(box, T0 + timedelta(seconds=30))  # not "sent": retried at once
     assert bus.ids() and box.last_error is None
 
 
@@ -146,19 +151,33 @@ async def test_batches_are_bounded(storage_hass):
     bus = Bus()
     box = AuditOutbox(runtime, TOPIC, bus.publish)
     for _ in range(3):
-        await box.async_deliver(T0)
+        await _deliver(box, T0)
     assert [len(b["events"]) for _, b in bus.sent] == [BATCH_SIZE, BATCH_SIZE, 3]
 
 
 # --- disabled and capacity ------------------------------------------------------------------
 
 
-async def test_without_an_audit_topic_events_are_not_kept_and_it_says_so(storage_hass):
+async def test_without_an_audit_topic_delivery_is_paused_and_the_backlog_is_kept(storage_hass):
+    runtime = await _runtime(storage_hass)
+    pending = [e.event_id for e in runtime.state.pending_audit]
+    bus = Bus()
+    box = AuditOutbox(runtime, None, bus.publish)
+    assert box.label == "paused" and not box.full
+    await _deliver(box, T0)
+    assert bus.sent == [] and [e.event_id for e in runtime.state.pending_audit] == pending
+    # a topic set later delivers what was kept
+    await _deliver(AuditOutbox(runtime, TOPIC, bus.publish), T0)
+    assert bus.ids() == pending
+
+
+async def test_discarding_the_backlog_is_an_explicit_separate_act(storage_hass):
     runtime = await _runtime(storage_hass)
     box = AuditOutbox(runtime, None, Bus().publish)
-    assert box.label == "disabled" and not box.full
-    await box.async_deliver(T0)
+    count = len(runtime.state.pending_audit)
+    assert count and await box.async_discard() == count
     assert runtime.state.pending_audit == ()
+    assert await box.async_discard() == 0  # nothing left
 
 
 async def test_capacity_states_and_gate(storage_hass):
@@ -210,6 +229,7 @@ async def test_delivery_and_ack_over_mqtt_do_not_block_the_loop(storage_hass, mq
     controller = entry.runtime_data.controller
     await hass.services.async_call(DOMAIN, "provision", blocking=True)
     await hass.services.async_call(DOMAIN, "reprovision", blocking=True)  # emits an event
+    await controller.async_deliver_audit()  # the worker round (also driven by a 30 s interval)
     await hass.async_block_till_done(wait_background_tasks=True)
     published = [c for c in mqtt_mock.async_publish.call_args_list if c.args[0] == TOPIC]
     assert published, "the provisioning event should have been delivered"
@@ -236,4 +256,96 @@ async def test_a_failing_publisher_never_breaks_the_control_cycle(storage_hass):
     controller.outbox = AuditOutbox(controller.runtime, TOPIC, bus.publish)
     status = await controller.async_tick(NOW)
     assert status.result in ("cycle", "reconcile:ready") and status.error is None
-    assert controller.outbox.last_error is not None
+    await controller.async_deliver_audit()
+    assert controller.outbox.last_error is not None and controller.runtime.state.pending_audit
+
+
+# --- R36-02: delivery never holds up the control loop --------------------------------------
+
+
+class Hanging:
+    """A publisher that waits for ever (or until released)."""
+
+    def __init__(self):
+        self.entered = asyncio.Event()
+        self.release = asyncio.Event()
+
+    async def publish(self, topic, payload):
+        self.entered.set()
+        await self.release.wait()
+
+
+async def test_a_hanging_broker_does_not_delay_the_loop_a_stop_or_an_ack(storage_hass):
+    from tests.test_controller import _controller
+    from tests.test_executor import FakeInverter
+    from tests.test_inputs import NOW, set_telemetry
+
+    FakeInverter(storage_hass)
+    set_telemetry(storage_hass, soc="50.0")
+    controller = await _controller(storage_hass, set_reconcile(prepared(), "ready", None),
+                                   live=True)
+    pending = [e.event_id for e in controller.runtime.state.pending_audit]
+    hanging = Hanging()
+    controller.outbox = AuditOutbox(controller.runtime, TOPIC, hanging.publish)
+    worker = asyncio.create_task(controller.async_deliver_audit())
+    await asyncio.wait_for(hanging.entered.wait(), 2)  # the worker is now inside the publish
+    # everything else proceeds: a control tick, the safety stop, an acknowledgement
+    status = await asyncio.wait_for(controller.async_tick(NOW), 2)
+    assert status.result in ("cycle", "reconcile:ready")
+    await asyncio.wait_for(controller.async_safety_stop(), 2)
+    await asyncio.wait_for(controller.async_handle_ack(_ack(pending[0])), 2)
+    assert pending[0] not in [e.event_id for e in controller.runtime.state.pending_audit]
+    assert not worker.done()  # still waiting for the broker
+    hanging.release.set()
+    await asyncio.wait_for(worker, 2)
+
+
+async def test_a_publish_timeout_keeps_the_queue_and_retries(storage_hass, monkeypatch):
+    from custom_components.hallm_energy import audit_outbox
+
+    monkeypatch.setattr(audit_outbox, "PUBLISH_TIMEOUT_S", 0.05)
+    runtime = await _runtime(storage_hass)
+    pending = [e.event_id for e in runtime.state.pending_audit]
+    hanging = Hanging()
+    box = AuditOutbox(runtime, TOPIC, hanging.publish)
+    await _deliver(box, T0)
+    assert "TimeoutError" in box.last_error
+    assert [e.event_id for e in runtime.state.pending_audit] == pending
+    good = Bus()
+    box._publish = good.publish  # the broker is back: the very next round delivers
+    await _deliver(box, T0 + timedelta(seconds=1))
+    assert good.ids() == pending and box.last_error is None
+
+
+@pytest.mark.parametrize("expected_lingering_timers", [True])
+async def test_unloading_cancels_a_delivery_that_is_waiting_for_the_broker(
+        storage_hass, mqtt_mock, monkeypatch):
+    from pytest_homeassistant_custom_component.common import (
+        MockConfigEntry,
+        async_fire_time_changed,
+    )
+
+    from custom_components.hallm_energy import controller as controller_module
+    from custom_components.hallm_energy.const import DOMAIN
+    from tests.test_executor import FakeInverter
+    from tests.test_inputs import OPTIONS, set_telemetry
+
+    hass = storage_hass
+    hass.states.async_set("input_boolean.shadow", "on")
+    hass.states.async_set("input_boolean.grid_recovery", "on")
+    FakeInverter(hass)
+    set_telemetry(hass, soc="50.0")
+    hanging = Hanging()
+    monkeypatch.setattr(controller_module, "_mqtt_publisher", lambda _hass: hanging.publish)
+    entry = MockConfigEntry(domain=DOMAIN, options={**OPTIONS, "audit_topic": TOPIC})
+    entry.add_to_hass(hass)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done(wait_background_tasks=True)
+    await hass.services.async_call(DOMAIN, "provision", blocking=True)
+    await hass.services.async_call(DOMAIN, "reprovision", blocking=True)  # an event to deliver
+    from homeassistant.util import dt as dt_util
+
+    async_fire_time_changed(hass, dt_util.utcnow() + timedelta(seconds=31))
+    await asyncio.wait_for(hanging.entered.wait(), 3)  # the interval worker is in the publish
+    async with asyncio.timeout(5):
+        assert await hass.config_entries.async_unload(entry.entry_id)  # cancels the worker

@@ -1,3 +1,4 @@
 provision:
 reprovision:
+discard_audit:
 safety_stop:

@@ -96,7 +96,7 @@
           "morning_dip_h": "How long before the PV start the dip floor may apply.",
           "refill_margin_min": "Safety margin before the end of useful PV.",
           "manage_floors": "Activation gate: in live mode the integration keeps every slot floor at the planned value (raising always, lowering only with trustworthy inputs). Off by default; the planned floors are only reported.",
-          "audit_topic": "MQTT topic for the audit events of grants and state changes. A receiver must acknowledge them on the same topic with /ack appended; events stay in a durable outbox until then. Without a topic the events are not kept."
+          "audit_topic": "MQTT topic for the audit events of grants and state changes. A receiver must acknowledge them on the same topic with /ack appended; events stay in a durable outbox until then. Without a topic delivery is paused and the events are kept."
         }
       }
     },
@@ -204,7 +204,7 @@
           "morning_dip_h": "How long before the PV start the dip floor may apply.",
           "refill_margin_min": "Safety margin before the end of useful PV.",
           "manage_floors": "Activation gate: in live mode the integration keeps every slot floor at the planned value (raising always, lowering only with trustworthy inputs). Off by default; the planned floors are only reported.",
-          "audit_topic": "MQTT topic for the audit events of grants and state changes. A receiver must acknowledge them on the same topic with /ack appended; events stay in a durable outbox until then. Without a topic the events are not kept."
+          "audit_topic": "MQTT topic for the audit events of grants and state changes. A receiver must acknowledge them on the same topic with /ack appended; events stay in a durable outbox until then. Without a topic delivery is paused and the events are kept."
         }
       }
     },
@@ -231,6 +231,10 @@
     "reprovision": {
       "name": "Reprovision",
       "description": "Trust the configured charge counter again after it was replaced, its epoch changed or the stored state was lost. Refused while a grant, step or episode is in flight; recorded in the audit."
+    },
+    "discard_audit": {
+      "name": "Discard audit backlog",
+      "description": "Remove every audit event that is still waiting for delivery. An explicit decision: switching the audit topic off only pauses delivery and keeps the events."
     }
   }
 }

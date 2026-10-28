@@ -72,6 +72,9 @@ class RecoveryInputs:
     # integration manages the floors (then it, not saved floors, is the authority)
     managed_floors: tuple[float, ...] | None = None
     audit_full: bool = False  # the audit outbox is full: no NEW grant can be recorded
+    # False = the grid is known to be absent (island or the relay unavailable): no grid
+    # grant is created then. None = not known/not configured: no restriction.
+    grid_present: bool | None = None
 
 
 @dataclass(frozen=True)
@@ -155,6 +158,8 @@ def plan_recovery(
     if soc >= params.reserve_pct:
         return state, RecoveryOutcome("none")
 
+    if inputs.grid_present is False:
+        return state, RecoveryOutcome("none", "island_or_grid_unknown")
     action = "wait_pv"
     if recovery is None and state.morning.phase != "none":
         # D-50: below the reserve inside the morning exception is not a recovery trigger

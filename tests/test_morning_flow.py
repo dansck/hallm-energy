@@ -167,3 +167,77 @@ def test_soc_below_reserve_inside_a_phase_does_not_start_recovery(morning):
     new_state, outcome = _plan(state, _inputs(soc=13.0, pv=lambda _t: 0.0))
     assert outcome.action == "none" and outcome.reason == f"morning_{morning.phase}"
     assert new_state.recovery is None and new_state.active_grant is None
+
+
+# --- R35: a running phase is judged every cycle, not only when it is entered -------------------
+
+
+DIP = empty_state(morning=MorningState("morning_dip"))
+REFILL = empty_state(morning=MorningState("pv_refill", 15.0))
+
+
+@pytest.mark.parametrize("state", [DIP, REFILL], ids=["dip", "refill"])
+def test_switching_the_gate_off_ends_a_running_phase(state):
+    gate_off = replace(PARAMS, enable_morning_dip=False)
+    new, out = _plan_m(at(7), state=state, soc=15.0, params=gate_off)
+    assert out.phase == "none" and out.reason == "gate_off" and new.morning.phase == "none"
+
+
+@pytest.mark.parametrize("state", [DIP, REFILL], ids=["dip", "refill"])
+def test_losing_the_grid_ends_a_running_phase(state):
+    new, out = _plan_m(at(7), state=state, soc=15.0, grid=False)
+    assert out.phase == "none" and out.reason == "grid_absent_or_unknown"
+    assert new.morning.phase == "none"
+
+
+@pytest.mark.parametrize(("kwargs", "label"), [
+    ({"forecast": "degraded"}, "degraded"),
+    ({"forecast": "old"}, "retrieved 7 h ago"),
+    ({"forecast": "epoch"}, "topology mismatch"),
+    ({"forecast": "short"}, "does not cover the window"),
+    ({"forecast": None}, "no forecast"),
+    ({"profile": None}, "no profile"),
+])
+def test_invalid_inputs_end_a_running_refill_with_a_handover(kwargs, label):
+    now = at(10)
+    forecasts = {
+        "degraded": _forecast(_sunny, now=now, quality="degraded"),
+        "old": _forecast(_sunny, now=now, retrieved=now - timedelta(hours=7)),
+        "epoch": _forecast(_sunny, now=now, epoch=2),
+        "short": _forecast(_sunny, now=now, hours=3),
+    }
+    kwargs = dict(kwargs)
+    if isinstance(kwargs.get("forecast"), str):
+        kwargs["forecast"] = forecasts[kwargs["forecast"]]
+    new, out = _plan_m(now, state=REFILL, soc=15.0, **kwargs)
+    assert new.morning.phase == "none", label
+    assert out.phase == "none" and out.floor_pct in (None, 20.0)
+
+
+def test_a_forecast_that_expires_inside_the_dip_does_not_start_the_refill():
+    sunrise = at(8, 5)
+    bad = _forecast(_sunny, now=sunrise, quality="degraded")
+    new, out = _plan_m(sunrise, state=DIP, soc=14.0, forecast=bad)
+    assert new.morning.phase == "none" and out.handoff is True
+
+
+def test_the_ended_exception_hands_over_to_recovery_not_to_a_noon_deadline():
+    """Below the reserve with the exception gone: recovery decides by its own rules
+    (anchored wait for PV, else a grant in off-peak), the grid being present."""
+    from tests.test_recovery_flow import _inputs, _plan
+
+    ended, _ = _plan_m(at(10), state=REFILL, soc=15.0,
+                       forecast=_forecast(_sunny, now=at(10), quality="degraded"))
+    assert ended.morning.phase == "none"
+    state, outcome = _plan(ended, replace(_inputs(soc=15.0, pv=lambda _t: 0.0), grid_present=True))
+    assert outcome.action == "grant_prepared"
+    island, outcome = _plan(ended, replace(_inputs(soc=15.0, pv=lambda _t: 0.0),
+                                           grid_present=False))
+    assert outcome.reason == "island_or_grid_unknown" and island.active_grant is None
+
+
+def test_no_grid_grant_for_an_unknown_or_absent_grid_only_when_it_is_known_absent():
+    from tests.test_recovery_flow import _inputs, _plan
+
+    _, outcome = _plan(empty_state(), replace(_inputs(pv=lambda _t: 0.0), grid_present=None))
+    assert outcome.action == "grant_prepared"  # no relay configured: no restriction

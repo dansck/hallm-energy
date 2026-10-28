@@ -27,8 +27,10 @@ from homeassistant.util import dt as dt_util
 
 from .config import ConfigInvalidError, EnergyConfig
 from .const import (
+    AUDIT_DELIVERY_INTERVAL,
     CONF_INSTALLATION_ID,
     DOMAIN,
+    SERVICE_DISCARD_AUDIT,
     SERVICE_PROVISION,
     SERVICE_REPROVISION,
     SERVICE_SAFETY_STOP,
@@ -142,7 +144,17 @@ def _start_loop(hass: HomeAssistant, entry: ConfigEntry, controller: EnergyContr
         # leaving live mode must stop promptly, not on the next interval
         entry.async_create_background_task(hass, tick(), f"{DOMAIN} gate change")
 
+    delivery: list = []  # the delivery round in flight, if any (one at a time)
+
+    @callback
+    def deliver(_now=None) -> None:
+        if delivery and not delivery[0].done():
+            return
+        delivery[:] = [entry.async_create_background_task(
+            hass, controller.async_deliver_audit(), f"{DOMAIN} audit delivery")]
+
     entry.async_on_unload(async_track_time_interval(hass, tick, TICK_INTERVAL))
+    entry.async_on_unload(async_track_time_interval(hass, deliver, AUDIT_DELIVERY_INTERVAL))
     entry.async_on_unload(async_track_state_change_event(
         hass, [controller.config.shadow_entity, controller.config.feature_entity], gates_changed
     ))
@@ -180,8 +192,12 @@ def _register_services(hass: HomeAssistant) -> None:
     async def safety_stop(call: ServiceCall) -> None:
         await _controller(hass).async_safety_stop()
 
+    async def discard_audit(call: ServiceCall) -> None:
+        await _controller(hass).async_discard_audit()
+
     async_register_admin_service(hass, DOMAIN, SERVICE_PROVISION, provision)
     async_register_admin_service(hass, DOMAIN, SERVICE_REPROVISION, reprovision)
+    async_register_admin_service(hass, DOMAIN, SERVICE_DISCARD_AUDIT, discard_audit)
     async_register_admin_service(hass, DOMAIN, SERVICE_SAFETY_STOP, safety_stop)
 
 
@@ -192,6 +208,7 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     unloaded = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
     hass.data.get(DOMAIN, {}).pop(entry.entry_id, None)
     if not hass.data.get(DOMAIN):
-        for service in (SERVICE_PROVISION, SERVICE_REPROVISION, SERVICE_SAFETY_STOP):
+        for service in (SERVICE_PROVISION, SERVICE_REPROVISION, SERVICE_DISCARD_AUDIT,
+                        SERVICE_SAFETY_STOP):
             hass.services.async_remove(DOMAIN, service)
     return unloaded

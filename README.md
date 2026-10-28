@@ -60,8 +60,11 @@ In place:
   when PV is forecast to restore the reserve by the end of useful PV. It is
   behind an activation gate (`Enable morning exception`, off by default), needs
   the grid present, a current profile and forecast covering the whole window,
-  and never runs together with a recovery grant. SOC below the reserve inside
-  it is not a recovery trigger.
+  and never runs together with a recovery grant. A running phase is judged by
+  the same standard every cycle: switching the gate off, losing the grid (or
+  not knowing it) or a forecast or profile that is no longer current ends it
+  at once and hands over to recovery, which never creates a grid grant in an
+  island. SOC below the reserve inside it is not a recovery trigger.
 
 - an audit outbox: every grant decision and state change becomes an immutable
   event (stamped with installation, policy and core versions, mode and state
@@ -69,9 +72,12 @@ In place:
   stored state, so they survive restarts — and are published in batches to an
   MQTT topic; an event leaves the outbox only when a receiver acknowledges its
   id on `<topic>/ack` (at least once, the receiver deduplicates). Control never
-  waits for the receiver. With 500 events pending no NEW grant is started
-  (nothing is dropped and nothing running is stopped). Without an audit topic
-  the outbox is off and events are not kept; the status sensor says which.
+  waits for the receiver: delivery is its own worker, the batch is only
+  snapshotted under the control lock and the wait for the broker (with a
+  time limit) happens outside it. With 500 events pending no NEW grant is
+  started (nothing is dropped and nothing running is stopped). Without an
+  audit topic delivery is paused and the events are kept; removing the backlog
+  is a separate explicit act (`hallm_energy.discard_audit`).
 
 In shadow, grants are created and tracked like in live mode, but nothing is
 written to the inverter.
@@ -94,7 +100,7 @@ entities (all of them can be changed later in the integration's options):
 | House load profile topic (optional) | retained MQTT topic |
 | Grid present relay (optional), enable morning exception | binary sensor on while the grid is present (without it the morning exception never starts); gate, off by default |
 | Manage slot floors | gate, off by default: write the planned floors (live mode only) |
-| Audit topic (optional) | MQTT topic for audit events, acknowledged on `<topic>/ack`; empty = audit off |
+| Audit topic (optional) | MQTT topic for audit events, acknowledged on `<topic>/ack`; empty = delivery paused, events kept |
 
 Recovery parameters (reserve, target, wait for PV, battery capacity and
 efficiency, budget factor, …) have defaults and can be changed

@@ -396,3 +396,32 @@ async def test_recovery_entry_gate_depends_on_floor_management(storage_hass, inv
     managed = _managed(await _controller(storage_hass, empty_state(), live=False))
     status = await managed.async_tick()
     assert status.recovery.action == "grant_prepared"  # only the morning phase lowers a floor
+
+
+async def test_a_persisted_running_phase_ends_on_the_first_tick_when_the_gate_is_off(
+        storage_hass, inverter):
+    """Restart into 'phase running, gate off': floors must not stay at the dip."""
+    from custom_components.hallm_energy.energy_core.morning import MorningState
+    from tests.test_inputs import set_telemetry
+
+    set_telemetry(storage_hass, soc="15.0")
+    state = empty_state(morning=MorningState("pv_refill", 15.0))
+    controller = await _controller(storage_hass, state, live=False)
+    assert controller.config.enable_morning_dip is False
+    await controller.async_tick()
+    assert controller.runtime.state.morning.phase == "none"
+
+
+async def test_the_grid_relay_decides_between_present_absent_and_unknown(storage_hass, inverter):
+    from custom_components.hallm_energy.config import EnergyConfig
+    from tests.test_inputs import OPTIONS
+
+    controller = await _controller(storage_hass, empty_state(), live=False)
+    assert controller._grid_present() is None  # no relay configured: not known
+    controller.config = EnergyConfig.from_options(
+        {**OPTIONS, "grid_relay_entity": "binary_sensor.grid"})
+    assert controller._grid_present() is False  # configured but entity missing
+    for state, expected in (("on", True), ("off", False), ("unavailable", False),
+                            ("unknown", False)):
+        storage_hass.states.async_set("binary_sensor.grid", state)
+        assert controller._grid_present() is expected

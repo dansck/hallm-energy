@@ -19,4 +19,6 @@ TICK_INTERVAL = timedelta(seconds=30)
 
 SERVICE_PROVISION = "provision"
 SERVICE_REPROVISION = "reprovision"
+SERVICE_DISCARD_AUDIT = "discard_audit"
+AUDIT_DELIVERY_INTERVAL = timedelta(seconds=30)
 SERVICE_SAFETY_STOP = "safety_stop"

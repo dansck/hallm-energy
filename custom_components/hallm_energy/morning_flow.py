@@ -4,9 +4,11 @@ Every cycle: find the PV window of the relevant day (first/last 15-minute step
 in which the corrected PV forecast exceeds the house load P50), judge the
 forecast and the profile for exactly that window, and call the shared state
 machine `morning_exception_decision`. Anything doubtful — no window, no usable
-forecast or profile, telemetry gone — ends the phase (floors go back up) and
-never starts one. The phase is only ever ENTERED when `enable_morning_dip` is
-on (activation gate), the grid is present and no recovery episode runs.
+forecast or profile, telemetry gone, the gate switched off, the grid gone or
+unknown — ends the phase (floors go back up) and never starts one. A running phase
+is judged by the same standard every cycle, not only when it is entered. The phase
+is only ever ENTERED when `enable_morning_dip` is on (activation gate), the grid is
+present and no recovery episode runs.
 
 While a phase is active, SOC below the reserve does NOT start recovery
 (`recovery_flow` checks `state.morning.phase`).
@@ -103,6 +105,12 @@ def plan_morning(state: StoreState, inputs: MorningInputs, params: MorningParams
     def end_phase(reason: str) -> tuple[StoreState, MorningOutcome]:
         return _with_morning(state, MorningState("none")), MorningOutcome("none", reason=reason)
 
+    # Judged every cycle, in a running phase too: switching the gate off, a grid that is
+    # gone or unknown, telemetry lost all end the exception at once (floors go back up).
+    if current.phase != "none" and not params.enable_morning_dip:
+        return end_phase("gate_off")
+    if current.phase != "none" and not inputs.grid_present:
+        return end_phase("grid_absent_or_unknown")
     if inputs.soc_pct is None:
         return end_phase("telemetry_invalid")
     if state.active_grant is not None or state.recovery is not None:

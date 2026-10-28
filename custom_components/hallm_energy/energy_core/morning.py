@@ -172,6 +172,18 @@ def morning_exception_decision(
         "pv_surplus_ac_kw": pv_surplus_ac_kw,
     }
 
+    # A phase already running is judged on EVERY call by the same standard as entering it:
+    # the forecast must be current and cover the window. Without that a refill or a dip
+    # could go on on the strength of a surplus nobody can vouch for any more. The safe
+    # transition is the end of the exception with a hand-over to recovery (floors back to
+    # the reserve, which stops any further discharge; new grid charging only by a grant).
+    forecast_valid = (
+        (now - forecast_retrieved_at) <= timedelta(hours=forecast_max_age_h)
+        and forecast_covers_window
+    )
+    if state.phase != "none" and not forecast_valid:
+        return MorningDecision("none", reserve_pct, none_state, True)
+
     if state.phase == "pv_refill":
         if soc_now_pct >= reserve_pct:
             return MorningDecision("none", reserve_pct, none_state, False, reserve_restored_by=now)
