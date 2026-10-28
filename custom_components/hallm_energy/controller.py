@@ -43,7 +43,7 @@ from .inputs import (
 from .lifecycle import GrantTransitionError, provision, reconcile, reprovision, set_reconcile
 from .morning_flow import MorningInputs, MorningOutcome, plan_morning
 from .profile_receiver import ProfileReceiver, PvForecastReceiver
-from .recovery_flow import RecoveryInputs, RecoveryOutcome, plan_recovery
+from .recovery_flow import RecoveryInputs, RecoveryOutcome, outlook_status, plan_recovery
 from .runtime import EnergyRuntime
 from .slot_plan import Op, Readback, current_slot, stop_ops
 from .state_schema import StoreState
@@ -97,6 +97,7 @@ class EnergyController:
         self.outbox = AuditOutbox(runtime, config.audit_topic, _mqtt_publisher(hass))
         runtime.mode_provider = lambda: "live" if self.gates.live() else "shadow"
         self._lock = asyncio.Lock()
+        self._outlook: dict | None = None
         self._was_live = False
         self._listeners: list[Callable[[], None]] = []
 
@@ -271,6 +272,7 @@ class EnergyController:
             "kinds": list(plan.kinds),
             "hold": hold,
             "reasons": list(plan.reasons),
+            "outlook": self._outlook,
             "managed": self.config.manage_floors,
             "diff": [i + 1 for i, (a, p) in enumerate(zip(actual, plan.floors, strict=True))
                      if a is None or abs(a - p) > 0.5],
@@ -310,11 +312,17 @@ class EnergyController:
         entities = replace(self.config.slot_entities, slot_starts=snapshot.slot_starts)
         charging = current_slot(entities, snapshot.local_time) \
             if grant is not None and grant.status == "active" else None
+        label, balance, why = "unknown", None, "no_recovery_params"
+        if reco is not None:
+            label, balance, why = outlook_status(
+                profile, pv, now, _local_outlook(now, reco.outlook_days), reco.topology_epoch)
+        self._outlook = {"label": label, "balance_kwh": balance, "why_unknown": why}
         ctx = FloorContext(
             now=now, tz=tz, slot_starts=snapshot.slot_starts, is_nt_at=is_nt_at,
             hold_floor_pct=hold, grant_target_pct=target, charging_slot=charging,
             phase=state.morning.phase, refill_floor_pct=state.morning.floor_state_pct,
             dip_window=None if outcome is None else outcome.dip_window,
+            outlook_poor=label != "good",
         )
         return floor_plan(params, ctx), hold
 
@@ -338,7 +346,7 @@ class EnergyController:
             profile=self.profiles.profile,
             nt_steps=offpeak_steps(schedule_intervals(self.hass, self.config, now), now),
             floors=readback.slot_capacity,
-            tomorrow=_local_tomorrow(now),
+            outlook=_local_outlook(now, params.outlook_days),
             live=status.live,
             managed_floors=self._managed_floors(snapshot, status),
             audit_full=self.outbox.full,
@@ -393,11 +401,12 @@ class EnergyController:
         return True
 
 
-def _local_tomorrow(now: datetime) -> tuple[datetime, datetime]:
-    """Tomorrow in local time as a UTC [start, end) (23/25 h on DST days)."""
+def _local_outlook(now: datetime, days: int) -> tuple[datetime, datetime]:
+    """Start of tomorrow to the end of the `days`-th local day after today, as a UTC
+    [start, end) (23/25 h days on DST changes)."""
     today = dt_util.as_local(now).date()
     start = dt_util.start_of_local_day(today + timedelta(days=1))
-    end = dt_util.start_of_local_day(today + timedelta(days=2))
+    end = dt_util.start_of_local_day(today + timedelta(days=1 + days))
     return dt_util.as_utc(start), dt_util.as_utc(end)
 
 

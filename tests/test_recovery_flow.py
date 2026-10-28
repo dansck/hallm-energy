@@ -275,7 +275,7 @@ RESTORE = (20.0,) * 6  # found floors, never below the reserve
 def _after(now, *, pv=_sunny, profile="default", floors=RAISED, soc=25.0, live=True):
     profile = _profile(now=now, hours=60) if profile == "default" else profile
     return replace(_inputs(now=now, soc=soc, pv=pv, profile=profile), floors=floors,
-                   tomorrow=TOMORROW, live=live)
+                   outlook=(max(TOMORROW[0], now), TOMORROW[1]), live=live)
 
 
 def test_grant_creation_saves_restore_floors_never_below_reserve():
@@ -594,3 +594,38 @@ def test_a_grant_with_a_pending_step_is_never_cancelled():
     assert proposed.state.pending_step is not None
     state, outcome = _plan(proposed.state, _inputs(now=t))
     assert state.active_grant is not None and outcome.action != "grant_cancelled"
+
+
+# --- outlook ---------------------------------------------------------------------------------
+
+
+def _outlook(pv, profile="default", now=NOW):
+    from custom_components.hallm_energy.recovery_flow import outlook_status
+    window = (max(TOMORROW[0], now), TOMORROW[1] + timedelta(days=1))
+    prof = _profile(now=now, hours=72) if profile == "default" else profile
+    forecast = None if pv is None else _forecast(pv, now=now, hours=72)
+    return outlook_status(prof, forecast, now, window, 1)
+
+
+def test_outlook_is_good_when_pv_covers_the_house_over_all_days():
+    label, balance, why = _outlook(_sunny)
+    assert label == "good" and balance > 0 and why is None
+
+
+def test_outlook_is_poor_when_pv_falls_short_of_the_house():
+    label, balance, _ = _outlook(lambda _t: 0.0)
+    assert label == "poor" and balance < 0
+
+
+@pytest.mark.parametrize(("pv", "profile"), [(None, "default"), (_sunny, None)])
+def test_outlook_is_unknown_without_a_snapshot(pv, profile):
+    label, balance, why = _outlook(pv, profile)
+    assert label == "unknown" and balance is None and why
+
+
+def test_outlook_is_unknown_when_a_snapshot_does_not_reach_the_window_end():
+    from custom_components.hallm_energy.recovery_flow import outlook_status
+    window = (TOMORROW[0], TOMORROW[1] + timedelta(days=2))
+    label, _, why = outlook_status(_profile(hours=48), _forecast(_sunny, hours=48), NOW,
+                                   window, 1)
+    assert label == "unknown" and why

@@ -284,13 +284,13 @@ async def test_configured_budget_factor_reaches_executor_and_reconcile(storage_h
     assert rebuilt.executor.budget_factor == 1.1
 
 
-async def test_local_tomorrow_spans_dst_change(hass):
+async def test_local_outlook_spans_dst_change(hass):
     from datetime import UTC, datetime
 
-    from custom_components.hallm_energy.controller import _local_tomorrow
+    from custom_components.hallm_energy.controller import _local_outlook
 
     await hass.config.async_set_time_zone("Europe/Prague")
-    start, end = _local_tomorrow(datetime(2026, 10, 24, 20, 0, tzinfo=UTC))  # 22:00 CEST
+    start, end = _local_outlook(datetime(2026, 10, 24, 20, 0, tzinfo=UTC), 1)  # 22:00 CEST
     assert start == datetime(2026, 10, 24, 22, 0, tzinfo=UTC)  # 25. 10. 00:00 CEST
     assert end - start == timedelta(hours=25)  # clocks go back that night
 
@@ -323,11 +323,10 @@ async def test_floor_plan_is_reported_next_to_the_actual_floors_and_never_writte
     controller = await _controller(storage_hass, empty_state(), live=True)
     status = await controller.async_tick()
     floors = status.floors
-    # 23:15 local: VT slots 25, off-peak day slots floor_vt (no profile for the hold),
-    # the night slot = the reserve
-    assert floors["planned"] == [25, 25, 25, 25, 25, 20]
+    # 23:15 local: no profile or forecast, so the outlook cannot be judged: poor
+    assert floors["planned"] == [25, 25, 25, 25, 25, 25]  # no outlook data = poor
     assert floors["kinds"] == ["vt", "nt_day", "vt", "mixed", "vt", "nt_night"]
-    assert floors["actual"] == [20.0] * 6 and floors["diff"] == [1, 2, 3, 4, 5]
+    assert floors["actual"] == [20.0] * 6 and floors["diff"] == [1, 2, 3, 4, 5, 6]
     assert inverter.calls == []  # diagnostics only, even in live mode
 
 
@@ -361,8 +360,8 @@ async def test_managed_floors_raise_to_the_table_in_live_mode(storage_hass, inve
     controller = _managed(await _controller(storage_hass, empty_state(), live=True))
     status = await controller.async_tick()
     assert status.floors["managed"] is True
-    assert [float(inverter.value(c)) for c in CAPS] == [25, 25, 25, 25, 25, 20]
-    assert {w.op.entity_id for w in status.writes} == set(CAPS[:5])
+    assert [float(inverter.value(c)) for c in CAPS] == [25, 25, 25, 25, 25, 25]
+    assert {w.op.entity_id for w in status.writes} == set(CAPS)  # no outlook data: all slots reserve + margin
 
 
 async def test_managed_floors_are_lowered_only_with_a_known_schedule(storage_hass, inverter):
@@ -374,7 +373,7 @@ async def test_managed_floors_are_lowered_only_with_a_known_schedule(storage_has
         storage_hass.states.async_set(cap, "30.0")
     controller = _managed(await _controller(storage_hass, empty_state(), live=True))
     await controller.async_tick()
-    assert [float(inverter.value(c)) for c in CAPS] == [25, 25, 25, 25, 25, 20]  # lowered
+    assert [float(inverter.value(c)) for c in CAPS] == [25, 25, 25, 25, 25, 25]  # lowered
     # schedule lost: floors are not lowered (and the plan falls back to floor_vt)
     set_telemetry(storage_hass, soc="50.0")  # default schedule covers only 12 hours
     for cap in CAPS:

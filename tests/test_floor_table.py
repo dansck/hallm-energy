@@ -19,7 +19,7 @@ from custom_components.hallm_energy.floor_table import (
 
 TZ = ZoneInfo("Europe/Prague")
 STARTS = (time(6), time(7), time(9), time(10), time(16), time(17))
-PARAMS = FloorParams(reserve_pct=20, comfort_pct=5, dip_floor_pct=10)
+PARAMS = FloorParams(reserve_pct=20, outlook_margin_pct=5, dip_floor_pct=10)
 VT_HOURS = {6, 9, 13, 16}  # D57d: 06-07, 09-10, 13-14, 16-17
 
 
@@ -48,12 +48,12 @@ def test_slots_are_classified_by_tariff_not_index():
 def test_base_floors_follow_the_table():
     plan = floor_plan(PARAMS, ctx(local(8), hold=40))
     # 06-07 VT, 07-09 NT (hold), 09-10 VT, 10-16 NT now (hold), 16-17 VT, night = reserve
-    assert plan.floors == (25, 40, 25, 40, 25, 20)
+    assert plan.floors == (20, 40, 20, 40, 20, 20)
 
 
 def test_mixed_slot_follows_the_tariff_at_its_evaluation_time():
     at_vt = floor_plan(PARAMS, ctx(local(13, 30), hold=40))
-    assert at_vt.floors[3] == 25  # VT right now
+    assert at_vt.floors[3] == 20  # VT right now
     at_nt = floor_plan(PARAMS, ctx(local(11), hold=40))
     assert at_nt.floors[3] == 40
 
@@ -68,18 +68,18 @@ def test_a_shifted_tariff_moves_the_floors_not_the_slot_index():
     shifted = lambda t: t.astimezone(TZ).hour not in {7, 8, 13, 16}  # noqa: E731
     plan = floor_plan(PARAMS, ctx(local(8), is_nt_at=shifted, hold=40))
     assert plan.kinds[0] == "nt_day" and plan.kinds[1] == "vt" and plan.kinds[2] == "nt_day"
-    assert plan.floors[:3] == (40, 25, 40)
+    assert plan.floors[:3] == (40, 20, 40)
 
 
 def test_unknown_schedule_means_floor_vt_everywhere():
     plan = floor_plan(PARAMS, ctx(local(8), is_nt_at=unknown, hold=40))
-    assert set(plan.kinds) == {"unknown"} and set(plan.floors) == {25}
+    assert set(plan.kinds) == {"unknown"} and set(plan.floors) == {20}
     assert "schedule_unknown_for_some_slots" in plan.reasons
 
 
 def test_hold_is_never_below_floor_vt_and_rounded_up():
-    assert floor_plan(PARAMS, ctx(local(8), hold=None)).floors[1] == 25
-    assert floor_plan(PARAMS, ctx(local(8), hold=10)).floors[1] == 25
+    assert floor_plan(PARAMS, ctx(local(8), hold=None)).floors[1] == 20
+    assert floor_plan(PARAMS, ctx(local(8), hold=10)).floors[1] == 20
     assert floor_plan(PARAMS, ctx(local(8), hold=41)).floors[1] == 45
 
 
@@ -95,18 +95,18 @@ def test_morning_dip_lowers_only_the_high_tariff_slots_in_the_window():
     window = (local(6).astimezone(UTC), local(9).astimezone(UTC))
     plan = floor_plan(PARAMS, ctx(local(7, 30), hold=40, phase="morning_dip",
                                   dip_window=window))
-    assert plan.floors == (10, 40, 25, 40, 25, 20)  # 09-10 starts at the window end
+    assert plan.floors == (10, 40, 20, 40, 20, 20)  # 09-10 starts at the window end
     window = (local(7).astimezone(UTC), local(10).astimezone(UTC))
     plan = floor_plan(PARAMS, ctx(local(7, 30), hold=40, phase="morning_dip",
                                   dip_window=window))
-    assert plan.floors == (25, 40, 10, 40, 25, 20)
+    assert plan.floors == (20, 40, 10, 40, 20, 20)
 
 
 def test_morning_dip_never_applies_to_an_unknown_schedule():
     window = (local(6).astimezone(UTC), local(9).astimezone(UTC))
     plan = floor_plan(PARAMS, ctx(local(7), is_nt_at=unknown, phase="morning_dip",
                                   dip_window=window))
-    assert set(plan.floors) == {25}
+    assert set(plan.floors) == {20}
 
 
 @pytest.mark.parametrize(("state", "expected"), [(15.0, 15.0), (22.0, 20.0), (10.0, 10.0)])
@@ -173,3 +173,30 @@ def test_classify_and_rounding_helpers():
     interval = (local(10), local(16))
     assert classify_slot(interval, local(8), TZ, d57d) == "mixed"
     assert ceil5(20.0) == 20 and ceil5(20.1) == 25 and ceil5(0) == 0
+
+
+# --- outlook --------------------------------------------------------------------------
+
+
+def test_poor_outlook_raises_every_floor_to_reserve_plus_margin():
+    plan = floor_plan(PARAMS, ctx(local(8), hold=40, outlook_poor=True))
+    assert plan.floors == (25, 40, 25, 40, 25, 25)
+    assert "outlook_poor" in plan.reasons
+
+
+def test_good_outlook_adds_nothing_to_the_reserve():
+    plan = floor_plan(PARAMS, ctx(local(8), hold=None, outlook_poor=False))
+    assert set(plan.floors) == {20} and "outlook_poor" not in plan.reasons
+
+
+def test_morning_dip_still_lowers_below_a_poor_outlook_floor():
+    window = (local(6).astimezone(UTC), local(9).astimezone(UTC))
+    plan = floor_plan(PARAMS, ctx(local(7, 30), hold=40, phase="morning_dip",
+                                  dip_window=window, outlook_poor=True))
+    assert plan.floors[0] == 10 and plan.floors[2] == 25
+
+
+def test_grant_target_wins_over_the_outlook_floor():
+    plan = floor_plan(PARAMS, ctx(local(23), grant_target_pct=30, charging_slot=5,
+                                  outlook_poor=True))
+    assert plan.floors[5] == 30

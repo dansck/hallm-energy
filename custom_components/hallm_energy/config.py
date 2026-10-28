@@ -34,7 +34,8 @@ CONF_GRID_RELAY = "grid_relay_entity"
 CONF_AUDIT_TOPIC = "audit_topic"
 CONF_ENABLE_MORNING_DIP = "enable_morning_dip"
 CONF_MANAGE_FLOORS = "manage_floors"
-CONF_COMFORT = "comfort_pct"
+CONF_OUTLOOK_MARGIN = "outlook_margin_pct"
+CONF_OUTLOOK_DAYS = "outlook_days"
 CONF_DIP_FLOOR = "morning_dip_floor_pct"
 CONF_DIP_H = "morning_dip_h"
 CONF_REFILL_MARGIN = "refill_margin_min"
@@ -59,7 +60,8 @@ NUMBER_OPTIONS: dict[str, tuple[float, float, float]] = {
     CONF_CHARGE_RATE: (1.0, 0.1, 20.0),
     CONF_BUDGET_FACTOR: (1.25, 1.1, 1.5),
     CONF_TOPOLOGY_EPOCH: (1, 1, 99),
-    CONF_COMFORT: (5.0, 0.0, 20.0),
+    CONF_OUTLOOK_MARGIN: (5.0, 0.0, 20.0),
+    CONF_OUTLOOK_DAYS: (2, 1, 4),
     CONF_DIP_FLOOR: (10.0, 5.0, 35.0),
     CONF_DIP_H: (3.0, 0.0, 4.0),
     CONF_REFILL_MARGIN: (30.0, 0.0, 120.0),
@@ -195,7 +197,7 @@ class EnergyConfig:
             manage_floors=manage,
             floor=FloorParams(
                 reserve_pct=numbers[CONF_RESERVE],
-                comfort_pct=numbers[CONF_COMFORT],
+                outlook_margin_pct=numbers[CONF_OUTLOOK_MARGIN],
                 dip_floor_pct=numbers[CONF_DIP_FLOOR],
             ),
             morning=MorningParams(
@@ -222,5 +224,6 @@ class EnergyConfig:
                 e_err_morning_kwh=numbers[CONF_E_ERR_MORNING],
                 assumed_charge_rate_dc_kw=numbers[CONF_CHARGE_RATE],
                 topology_epoch=int(numbers[CONF_TOPOLOGY_EPOCH]),
+                outlook_days=int(numbers[CONF_OUTLOOK_DAYS]),
             ),
         )

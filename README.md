@@ -42,15 +42,16 @@ In place:
   the recovery continues under a new episode id. Once charging was ever enabled
   the grant runs to its own close;
 - after the grant, decided again every cycle: the floors stay at the target
-  while tomorrow's corrected PV minus the house load is negative or cannot be
-  judged (no repeated discharge and re-buy); otherwise the floors found when
+  while the outlook (corrected PV minus the house load over the next
+  `outlook_days` days, 2 by default) is negative or cannot be judged (no repeated discharge and re-buy); otherwise the floors found when
   the grant was prepared are written back — never below the reserve — with
   charging verifiably off, and the episode ends. Losing the reason raises an
   already restored floor back; a floor changed from outside blocks all floor
   writes (diagnosed, not overwritten).
 
 - the floor table: the discharge floor of every slot is worked out from the
-  tariff schedule (not from the slot index) — high tariff: reserve + comfort,
+  tariff schedule (not from the slot index) — high tariff: the reserve (20 %) — raised to reserve + margin (25 %) only while
+  the outlook of the next days is poor or cannot be judged,
   off-peak during the day: that plus what the remaining high-tariff blocks need
   beyond the PV forecast, off-peak after the last high tariff: the reserve —
   with the morning exception and grants overlaid. It is always REPORTED next to

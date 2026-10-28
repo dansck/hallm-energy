@@ -3,7 +3,7 @@ function, no I/O.
 
 Each slot is classified against the TARIFF SCHEDULE, not its index (D-30):
 
-* `vt` — wholly high tariff                       → `floor_vt` (reserve + comfort)
+* `vt` — wholly high tariff                       → `floor_vt` (= the reserve)
 * `nt_day` — off-peak with more high tariff today → `floor_hold`
 * `nt_night` — off-peak after the last high tariff of the day
                                                    → the night floor = the reserve
@@ -14,6 +14,10 @@ Each slot is classified against the TARIFF SCHEDULE, not its index (D-30):
 
 Overlays, in this order of precedence:
 
+0. a POOR OUTLOOK (the forecast of the next days does not cover the house) — or one
+   that cannot be judged — raises every floor to the outlook floor (reserve + margin,
+   normally 25 %): no discharge down to the reserve just to buy it back. With a good
+   outlook the normal floor is the reserve itself and nothing is added;
 1. grant prepared / active / paused, or `cloudy_hold` after it: every floor is
    at least the grant target; the slot that is charging exactly the target;
 2. `morning_dip`: high-tariff slots overlapping the window get the dip
@@ -46,12 +50,17 @@ def ceil5(value: float) -> float:
 @dataclass(frozen=True)
 class FloorParams:
     reserve_pct: float
-    comfort_pct: float
+    outlook_margin_pct: float  # added to the reserve while the outlook is poor
     dip_floor_pct: float
 
     @property
     def floor_vt_pct(self) -> float:
-        return ceil5(self.reserve_pct + self.comfort_pct)
+        """The normal floor of a high-tariff slot: the reserve, nothing added."""
+        return ceil5(self.reserve_pct)
+
+    @property
+    def outlook_floor_pct(self) -> float:
+        return ceil5(self.reserve_pct + self.outlook_margin_pct)
 
 
 @dataclass(frozen=True)
@@ -66,6 +75,7 @@ class FloorContext:
     phase: Phase = "none"
     refill_floor_pct: float | None = None  # `pv_refill` state floor
     dip_window: tuple[datetime, datetime] | None = None  # [start, end) of `morning_dip`
+    outlook_poor: bool = False  # forecast of the next days poor — or not judgeable
 
 
 @dataclass(frozen=True)
@@ -163,8 +173,12 @@ def floor_plan(params: FloorParams, ctx: FloorContext) -> FloorPlan:
             base = night
         else:  # vt, unknown
             base = floor_vt
-        floor = base
         high = kind in ("vt", "unknown") or (kind == "mixed" and base == floor_vt)
+        floor = base
+        if ctx.outlook_poor and floor < params.outlook_floor_pct:
+            floor = params.outlook_floor_pct
+            if "outlook_poor" not in reasons:
+                reasons.append("outlook_poor")
 
         if ctx.phase == "morning_dip" and ctx.dip_window is not None and high \
                 and kind != "unknown" \

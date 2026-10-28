@@ -13,7 +13,7 @@
   the remaining budget, same ID. Without a grant the episode ends once the
   reserve is restored.
 * After the grant closed (`floor_after_recovery`): every cycle decides anew.
-  `cloudy_hold` keeps the floors at the grant target while tomorrow's
+  `cloudy_hold` keeps the floors at the grant target while the outlook's
   corrected PV minus the house load is negative — or cannot be judged (no
   usable profile/forecast); otherwise `restoring` writes the restore floors
   (the floors found when the grant was prepared, never below the reserve —
@@ -53,6 +53,7 @@ class RecoveryParams:
     e_err_morning_kwh: float
     assumed_charge_rate_dc_kw: float
     topology_epoch: int
+    outlook_days: int = 2  # local days after today that the outlook looks at
 
 
 @dataclass(frozen=True)
@@ -66,7 +67,8 @@ class RecoveryInputs:
     profile: HouseLoadProfile | None
     nt_steps: Sequence[datetime]  # future off-peak step starts per the schedule
     floors: tuple[float | None, ...] = ()  # current slot floors (readback)
-    tomorrow: tuple[datetime, datetime] | None = None  # local tomorrow as UTC [start, end)
+    # outlook window: start of tomorrow (local) to the end of the last day looked at, UTC
+    outlook: tuple[datetime, datetime] | None = None
     live: bool = True  # shadow: floors were never raised, so they are not compared
     # slot floors planned by the floor table for the CURRENT state; set only while the
     # integration manages the floors (then it, not saved floors, is the authority)
@@ -301,7 +303,29 @@ def _maintain_grant(state: StoreState, inputs: RecoveryInputs, params: RecoveryP
     return extend_window(state, new_end=new_end, now=now), RecoveryOutcome("window_extended")
 
 
-def tomorrow_balance_kwh(pv: Callable[[datetime], float], profile: HouseLoadProfile,
+def outlook_status(
+    profile: HouseLoadProfile | None, pv: PvForecast | None, now: datetime,
+    window: tuple[datetime, datetime] | None, topology_epoch: int,
+) -> tuple[str, float | None, str | None]:
+    """`("good" | "poor" | "unknown", balance_kwh, why_unknown)`: corrected PV minus the
+    house load P50 over the whole outlook window. Unknown = a snapshot missing, stale,
+    not covering the window or of another topology; callers treat it like poor."""
+    if window is None:
+        return "unknown", None, "outlook_unknown"
+    blocker = (wait_pv_blocker(profile, now=now, required_end=window[1],
+                               topology_epoch=topology_epoch)
+               or pv_blocker(pv, now=now, required_end=window[1],
+                             topology_epoch=topology_epoch))
+    if blocker is not None:
+        return "unknown", None, blocker
+    assert pv is not None and profile is not None
+    balance = outlook_balance_kwh(_pv_kw(pv), profile, *window)
+    if balance == -math.inf:
+        return "unknown", None, "profile_not_covering_window"
+    return ("good" if balance >= 0 else "poor"), balance, None
+
+
+def outlook_balance_kwh(pv: Callable[[datetime], float], profile: HouseLoadProfile,
                          start: datetime, end: datetime) -> float:
     """Corrected PV minus house load (P50) over [start, end), kWh AC."""
     total, t = 0.0, start
@@ -358,13 +382,11 @@ def _after_grant(state: StoreState, recovery: RecoveryEpisode, inputs: RecoveryI
     if not managed and inputs.live and floor_writes(recovery, inputs.floors) is None:
         return _hold(state, recovery, "floor_conflict", now)
 
-    blocker = ("tomorrow_unknown" if inputs.tomorrow is None
-               else _blocker(inputs, inputs.tomorrow[1], params))
-    if blocker is not None:
-        return _hold(state, recovery, blocker, now, blocker)
-    assert inputs.tomorrow is not None and inputs.pv is not None
-    assert inputs.profile is not None
-    if tomorrow_balance_kwh(_pv_kw(inputs.pv), inputs.profile, *inputs.tomorrow) < 0:
+    label, _balance, why = outlook_status(inputs.profile, inputs.pv, now, inputs.outlook,
+                                          params.topology_epoch)
+    if label == "unknown":
+        return _hold(state, recovery, why or "outlook_unknown", now, why)
+    if label == "poor":
         return _hold(state, recovery, "cloudy", now)
 
     restoring = replace(recovery, state="restoring", reason_code=None,
