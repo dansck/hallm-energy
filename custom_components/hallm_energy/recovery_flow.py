@@ -35,7 +35,7 @@ from .energy_core.grant import CounterReading
 from .energy_core.house_load import HouseLoadProfile, wait_pv_blocker
 from .energy_core.pv_forecast import PvForecast, pv_blocker
 from .energy_core.recovery import STEP_MINUTES, recovery_decision
-from .lifecycle import extend_window, prepare_grant
+from .lifecycle import cancel_prepared_grant, extend_window, prepare_grant
 from .slot_plan import CAPACITY_TOLERANCE_PCT
 from .state_schema import RecoveryEpisode, StoreState
 
@@ -144,6 +144,9 @@ def plan_recovery(
         return state, RecoveryOutcome("none", "not_ready")
     grant = state.active_grant
     if grant is not None:
+        cancelled = _reassess_prepared(state, inputs, params, new_id)
+        if cancelled is not None:
+            return cancelled
         return _maintain_grant(state, inputs, params, now)
 
     recovery = state.recovery
@@ -231,8 +234,10 @@ def plan_recovery(
     floors = inputs.floors
     restore = (tuple(max(f, params.reserve_pct) for f in floors)
                if floors and None not in floors else None)
+    # floors saved by an earlier grant of this episode are the ones to go back to
     episode = replace(recovery, state="grid_recovery", decided_at=now, reason_code=blocker,
-                      restore_floors=restore, hold_floor_pct=decision.grant.identity.target_pct)
+                      restore_floors=recovery.restore_floors or restore,
+                      hold_floor_pct=decision.grant.identity.target_pct)
     return replace(prepared, recovery=episode), RecoveryOutcome("grant_prepared", None, blocker)
 
 
@@ -240,6 +245,46 @@ def _with_recovery(state: StoreState, recovery: RecoveryEpisode) -> StoreState:
     if state.recovery == recovery:
         return state
     return replace(state, state_revision=state.state_revision + 1, recovery=recovery)
+
+
+def _reassess_prepared(
+    state: StoreState, inputs: RecoveryInputs, params: RecoveryParams,
+    new_id: Callable[[], str],
+) -> tuple[StoreState, RecoveryOutcome] | None:
+    """A grant that was prepared but never enabled is re-judged every cycle by the very
+    function that created it, against the SAME anchored deadline. A grant born without
+    usable inputs (the conservative default) therefore does not outlive the data that
+    arrive later: once the PV can restore the reserve in time — or the reserve is
+    already restored — it is cancelled. Anything doubtful keeps it."""
+    grant, recovery = state.active_grant, state.recovery
+    soc = inputs.soc_pct
+    if (grant is None or grant.status != "prepared" or state.pending_step is not None
+            or recovery is None or recovery.state != "grid_recovery" or soc is None):
+        return None
+    now = inputs.now
+    if soc >= params.reserve_pct:
+        return (cancel_prepared_grant(state, now=now, reason="reserve_restored",
+                                      new_episode_id=None),
+                RecoveryOutcome("grant_cancelled", "reserve_restored"))
+    if now >= recovery.wait_until:
+        return None  # the wait is over: the grid grant stands
+    surplus, blocker = _surplus(inputs, recovery.wait_until, params)
+    if blocker is not None:
+        return None  # not judgeable: keep the conservative grant
+    decision = recovery_decision(
+        grant_id=new_id(), now=now, soc_now_pct=soc, reserve_pct=params.reserve_pct,
+        recovery_target_pct=params.recovery_target_pct,
+        recovery_pv_wait_h=params.recovery_pv_wait_h, recovery_wait_until=recovery.wait_until,
+        c_use_kwh=params.c_use_kwh, eta_c=params.eta_c, eta_d=params.eta_d,
+        e_err_morning_kwh=params.e_err_morning_kwh, pv_surplus_ac_kw=surplus,
+        counter_id=grant.identity.counter_id, checkpoint_dc_kwh=grant.identity.checkpoint_dc_kwh,
+        candidate_nt_steps=(), assumed_charge_rate_dc_kw=params.assumed_charge_rate_dc_kw,
+    )
+    if decision.state != "wait_pv":
+        return None
+    return (cancel_prepared_grant(state, now=now, reason="pv_restores_reserve",
+                                  new_episode_id=new_id()),
+            RecoveryOutcome("grant_cancelled", "pv_restores_reserve"))
 
 
 def _maintain_grant(state: StoreState, inputs: RecoveryInputs, params: RecoveryParams,
@@ -280,7 +325,8 @@ def floor_writes(recovery: RecoveryEpisode,
         return None
     writes = []
     for i, (current, back) in enumerate(zip(floors, restore, strict=True)):
-        target = back if recovery.state == "restoring" else max(hold, back)
+        # a wait_pv episode that follows a cancelled grant puts its floors back too
+        target = back if recovery.state in ("restoring", "wait_pv") else max(hold, back)
         known = (hold, back)
         if current is None or not any(abs(current - k) <= CAPACITY_TOLERANCE_PCT
                                       for k in (*known, target)):

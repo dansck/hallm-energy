@@ -425,3 +425,29 @@ async def test_the_grid_relay_decides_between_present_absent_and_unknown(storage
                             ("unknown", False)):
         storage_hass.states.async_set("binary_sensor.grid", state)
         assert controller._grid_present() is expected
+
+
+async def test_the_evening_of_28_10_a_grant_born_without_data_is_cancelled_by_the_data(
+        storage_hass, inverter):
+    """The real sequence: restart, SOC below the reserve, no profile/forecast yet -> a
+    conservative grant; the snapshots arrive -> it is cancelled, the sun can restore it."""
+    import json as _json
+
+    from tests.test_inputs import set_telemetry
+    from tests.test_recovery_flow import _forecast, _profile, _sunny
+
+    set_telemetry(storage_hass, soc="14.0")
+    controller = await _controller(storage_hass, empty_state(), live=False)
+    first = await controller.async_tick()
+    assert first.recovery.action == "grant_prepared"
+    assert first.recovery.pv_blocker == "profile_missing"
+    grant_id = controller.runtime.state.active_grant.identity.grant_id
+    controller.profiles.handle(_json.dumps(_profile(now=NOW, hours=60).to_dict()), NOW)
+    controller.pv_forecasts.handle(_json.dumps(_forecast(_sunny, now=NOW).to_dict()), NOW)
+    second = await controller.async_tick()
+    state = controller.runtime.state
+    assert second.recovery.action == "grant_cancelled"
+    assert state.active_grant is None and state.recovery.state == "wait_pv"
+    assert [e.event_id for e in state.pending_audit if e.payload["kind"] == "grant_cancelled"] \
+        == [f"{grant_id}:cancelled"]
+    assert inverter.calls == []  # shadow: nothing was ever written

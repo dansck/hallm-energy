@@ -485,3 +485,54 @@ async def test_unreadable_floor_gets_the_planned_value_and_a_failed_write_stops_
     inverter.ignore.add((CAPS[2], 25.0))  # the third write is not applied by the device
     await executor.async_cycle(_snapshot(soc=50.0), floor_plan=_plan([25] * 6), lowering_ok=True)
     assert [c[0] for c in inverter.calls] == [CAPS[0], CAPS[1], CAPS[2]]  # stopped there
+
+
+# --- floors after a cancelled grant --------------------------------------------------------
+
+
+def _cancelled_state():
+    from datetime import timedelta as td
+
+    from tests.test_recovery_flow import NOW as RNOW
+    from tests.test_recovery_flow import _born_without_data, _inputs, _plan
+
+    cancelled, _ = _plan(_born_without_data(), _inputs(now=RNOW + td(minutes=10)))
+    assert cancelled.recovery.state == "wait_pv" and cancelled.active_grant is None
+    return set_reconcile(cancelled, "ready", None)
+
+
+async def test_a_cancelled_grants_raised_floors_go_back_when_live(storage_hass, inverter):
+    _set_caps(storage_hass, [25] * 6)  # raised by the grant's preparation
+    executor = await _executor(storage_hass, state=_cancelled_state())
+    report = await executor.async_cycle(_snapshot(soc=13.0))
+    assert [float(inverter.value(c)) for c in CAPS] == [20.0] * 6  # never below the reserve
+    assert all(w.outcome == "confirmed" for w in report.writes)
+
+
+async def test_a_floor_changed_from_outside_blocks_the_restore_after_a_cancel(
+        storage_hass, inverter):
+    _set_caps(storage_hass, [25, 25, 15, 25, 25, 25])
+    executor = await _executor(storage_hass, state=_cancelled_state())
+    await executor.async_cycle(_snapshot(soc=13.0))
+    assert [c for c in inverter.calls if c[0] in CAPS] == []
+
+
+async def test_after_a_cancel_shadow_only_reports_the_restore(storage_hass, inverter):
+    _set_caps(storage_hass, [25] * 6)
+    executor = await _executor(storage_hass, state=_cancelled_state(),
+                               gates=_gates(storage_hass, shadow="on"))
+    report = await executor.async_cycle(_snapshot(soc=13.0))
+    assert inverter.calls == []
+    assert [op.value for op in report.intents if op.entity_id in CAPS] == [20.0] * 6
+
+
+async def test_a_wait_pv_episode_without_a_grant_never_touches_the_floors(storage_hass, inverter):
+    from tests.test_recovery_flow import NOW as RNOW
+    from tests.test_recovery_flow import _inputs, _plan
+
+    waiting, outcome = _plan(empty_state(), _inputs(now=RNOW))
+    assert outcome.action == "entered" and waiting.recovery.restore_floors is None
+    _set_caps(storage_hass, [10, 10, 10, 10, 10, 20])
+    executor = await _executor(storage_hass, state=set_reconcile(waiting, "ready", None))
+    await executor.async_cycle(_snapshot(soc=13.0))
+    assert [c for c in inverter.calls if c[0] in CAPS] == []

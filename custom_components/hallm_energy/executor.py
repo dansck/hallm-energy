@@ -322,7 +322,7 @@ class GrantExecutor:
             state is None
             or state.active_grant is not None
             or recovery is None
-            or recovery.state not in ("cloudy_hold", "restoring")
+            or recovery.state not in ("cloudy_hold", "restoring", "wait_pv")
         ):
             return
         readback = self.io.read_slots(self.entities)

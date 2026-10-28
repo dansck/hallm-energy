@@ -507,6 +507,47 @@ def confirm_closed(state: StoreState, *, now: datetime) -> StoreState:
                  recovery=recovery)
 
 
+def cancel_prepared_grant(
+    state: StoreState, *, now: datetime, reason: str, new_episode_id: str | None
+) -> StoreState:
+    """A grant that was prepared but never enabled is no longer needed. The episode
+    is closed in the ledger (its id can never be used again — replay protection) with
+    the usage measured so far, and the recovery episode continues under a NEW episode
+    id with its anchored deadline untouched (`new_episode_id` None = the recovery ends
+    too, e.g. the reserve is restored). Only a `prepared` grant without a pending step
+    qualifies: once charging was ever enabled the grant runs to its own close."""
+    active = state.active_grant
+    if active is None or active.status != "prepared" or state.pending_step is not None:
+        raise GrantTransitionError("only a prepared grant without a pending step can be cancelled")
+    episode_id = active.identity.episode_id
+    ledger = tuple(
+        replace(e, state="closed", final_used_dc_kwh=active.usage.used_dc_kwh,
+                close_reason=reason, close_at=now)
+        if e.episode_id == episode_id else e
+        for e in state.episode_ledger
+    )
+    audit = _audit(
+        state,
+        f"{active.identity.grant_id}:cancelled",
+        {
+            "kind": "grant_cancelled",
+            "grant_id": active.identity.grant_id,
+            "episode_id": episode_id,
+            "reason": reason,
+            "budget_dc_kwh": active.identity.budget_dc_kwh,
+            "final_used_dc_kwh": active.usage.used_dc_kwh,
+        },
+        now,
+    )
+    recovery = state.recovery
+    if recovery is not None and recovery.episode_id == episode_id:
+        recovery = None if new_episode_id is None else replace(
+            recovery, episode_id=new_episode_id, state="wait_pv", decided_at=now,
+            reason_code=reason)
+    return _bump(state, active_grant=None, episode_ledger=ledger, pending_audit=audit,
+                 recovery=recovery)
+
+
 def extend_window(state: StoreState, *, new_end: datetime, now: datetime) -> StoreState:
     """The window ran out before the target: future off-peak steps for the
     REMAINING budget, same episode/ID — budget and usage are never reset."""

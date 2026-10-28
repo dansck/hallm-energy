@@ -34,7 +34,13 @@ In place:
   load profile until a deadline anchored at entry; PV is credited only while
   both snapshots (received over MQTT) are current, complete and good quality. Otherwise a grid grant to the
   recovery target is prepared over the next off-peak steps, one per episode;
-  an expired window is extended with the same identity and budget;
+  an expired window is extended with the same identity and budget. A grant that
+  was prepared but never enabled is re-judged every cycle by the same function
+  against the same anchored deadline: a grant born without usable data (the
+  conservative default) is cancelled once the PV can restore the reserve in
+  time, or once the reserve is restored; the episode is closed in the ledger and
+  the recovery continues under a new episode id. Once charging was ever enabled
+  the grant runs to its own close;
 - after the grant, decided again every cycle: the floors stay at the target
   while tomorrow's corrected PV minus the house load is negative or cannot be
   judged (no repeated discharge and re-buy); otherwise the floors found when

@@ -498,3 +498,99 @@ def test_managed_entry_does_not_depend_on_the_found_floor():
     assert outcome.action == "grant_prepared"
     _, outcome = _plan(empty_state(), _inputs(pv=lambda _t: 0.0, floor=10.0))
     assert outcome.reason == "floor_below_reserve"
+
+
+# --- a prepared grant is re-judged until charging was ever enabled -------------------------
+
+
+def _born_without_data(floors=FLOORS):
+    """The situation of 28. 10. 17:45: below the reserve, no profile and no forecast yet."""
+    state, outcome = _plan(empty_state(), replace(_inputs(profile=None, pv=None), floors=floors))
+    assert outcome.action == "grant_prepared" and outcome.pv_blocker == "profile_missing"
+    return state
+
+
+def test_a_grant_born_without_data_is_cancelled_when_the_pv_data_arrive():
+    prepared = _born_without_data()
+    grant, episode = prepared.active_grant, prepared.recovery
+    later = NOW + timedelta(minutes=10)
+    state, outcome = _plan(prepared, _inputs(now=later))  # profile + forecast now there
+    assert outcome.action == "grant_cancelled" and outcome.reason == "pv_restores_reserve"
+    assert state.active_grant is None
+    # the episode is closed for good; the recovery continues under a NEW id, same deadline
+    (entry,) = state.episode_ledger
+    assert entry.state == "closed" and entry.close_reason == "pv_restores_reserve"
+    assert entry.episode_id == episode.episode_id
+    assert state.recovery.state == "wait_pv" and state.recovery.episode_id != episode.episode_id
+    assert state.recovery.wait_until == episode.wait_until  # anchored, never moved
+    assert state.recovery.restore_floors == RESTORE and state.recovery.hold_floor_pct == 25
+    event = state.pending_audit[-1]
+    assert event.event_id == f"{grant.identity.grant_id}:cancelled"
+    assert event.payload["kind"] == "grant_cancelled"
+    assert parse_store_state(json.loads(json.dumps(state.to_dict()))) == state
+
+
+def test_the_cancelled_episode_can_still_need_a_grid_grant_later_without_a_replay():
+    prepared = _born_without_data()
+    cancelled, _ = _plan(prepared, _inputs(now=NOW + timedelta(minutes=10)))
+    deadline = cancelled.recovery.wait_until
+    after = deadline + timedelta(minutes=5)
+    state, outcome = _plan(cancelled, _inputs(now=after, profile=_profile(now=after, hours=60),
+                                              pv=_forecast(_sunny, now=after)))
+    assert outcome.action == "grant_prepared"  # the wait is over: the grid, a NEW episode
+    assert state.active_grant.identity.episode_id == state.recovery.episode_id
+    assert state.recovery.wait_until == deadline
+    assert state.recovery.restore_floors == RESTORE  # still the floors found originally
+    assert len(state.episode_ledger) == 2
+
+
+@pytest.mark.parametrize("kwargs", [
+    {"pv": lambda _t: 0.0},                       # cloudy: still needs the grid
+    {"profile": None},                            # not judgeable: the conservative grant stays
+    {"pv": _forecast(_sunny, now=NOW + timedelta(minutes=10), quality="degraded")},
+    {"pv": _forecast(_sunny, now=NOW + timedelta(minutes=10), hours=24)},   # horizon too short
+])
+def test_a_prepared_grant_stays_when_the_data_do_not_support_waiting(kwargs):
+    prepared = _born_without_data()
+    state, outcome = _plan(prepared, _inputs(now=NOW + timedelta(minutes=10), **kwargs))
+    assert outcome.action != "grant_cancelled" and state.active_grant is not None
+
+
+def test_a_prepared_grant_is_cancelled_when_the_reserve_is_restored_and_the_episode_ends():
+    prepared = _born_without_data()
+    state, outcome = _plan(prepared, _inputs(now=NOW + timedelta(hours=3), soc=21.0))
+    assert outcome.action == "grant_cancelled" and outcome.reason == "reserve_restored"
+    assert state.active_grant is None and state.recovery is None
+
+
+def test_after_the_wait_deadline_the_grid_grant_is_not_cancelled():
+    prepared = _born_without_data()
+    after = prepared.recovery.wait_until + timedelta(minutes=1)
+    state, outcome = _plan(prepared, _inputs(now=after, profile=_profile(now=after, hours=60),
+                                             pv=_forecast(_sunny, now=after)))
+    assert state.active_grant is not None and outcome.action != "grant_cancelled"
+
+
+@pytest.mark.parametrize("status", ["active", "paused", "closing"])
+def test_a_grant_that_was_ever_enabled_is_never_cancelled(status):
+    from custom_components.hallm_energy.state_schema import ActiveGrant
+
+    prepared = _born_without_data()
+    running = replace(prepared, active_grant=replace(prepared.active_grant, status=status))
+    assert isinstance(running.active_grant, ActiveGrant)
+    state, outcome = _plan(running, _inputs(now=NOW + timedelta(minutes=10)))
+    assert state.active_grant is not None and outcome.action != "grant_cancelled"
+
+
+def test_a_grant_with_a_pending_step_is_never_cancelled():
+    from custom_components.hallm_energy.lifecycle import step_grant
+
+    prepared = _born_without_data()
+    t = NOW + timedelta(minutes=10)
+    proposed = step_grant(prepared, now=t, soc_now_pct=13.0,
+                          reading=CounterReading(COUNTER, 7204.0, t), reading_epoch="e1",
+                          telemetry_valid=True, is_nt=lambda _t: True, deye_prepared=True,
+                          safety_revision=1)
+    assert proposed.state.pending_step is not None
+    state, outcome = _plan(proposed.state, _inputs(now=t))
+    assert state.active_grant is not None and outcome.action != "grant_cancelled"
