@@ -152,6 +152,9 @@ def plan_recovery(
         return state, RecoveryOutcome("none")
 
     action = "wait_pv"
+    if recovery is None and state.morning.phase != "none":
+        # D-50: below the reserve inside the morning exception is not a recovery trigger
+        return state, RecoveryOutcome("none", f"morning_{state.morning.phase}")
     if recovery is None:
         floor = inputs.current_floor_pct
         if floor is None or floor < params.reserve_pct:

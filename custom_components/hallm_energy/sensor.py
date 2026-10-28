@@ -108,6 +108,13 @@ class StatusSensor(SensorEntity):
                 "intents": [f"{op.entity_id}={op.value}" for op in tick.intents],
                 "writes": [f"{w.op.entity_id}={w.op.value}:{w.outcome}" for w in tick.writes],
                 "last_error": tick.error,
+                "morning_phase": None if tick.morning is None else tick.morning.phase,
+                "morning_reason": None if tick.morning is None else tick.morning.reason,
+                "t_pv_start": None if tick.morning is None or tick.morning.t_pv_start is None
+                else tick.morning.t_pv_start.isoformat(),
+                "t_pv_end": None if tick.morning is None or tick.morning.t_pv_end is None
+                else tick.morning.t_pv_end.isoformat(),
+                "floors": tick.floors,
                 "recovery_action": None if tick.recovery is None else tick.recovery.action,
                 "recovery_action_reason": None if tick.recovery is None
                 else tick.recovery.reason,

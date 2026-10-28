@@ -19,6 +19,7 @@ from datetime import UTC, datetime
 from typing import Any, Literal
 
 from .energy_core.grant import COUNTER_STEP_TOLERANCE_KWH
+from .energy_core.morning import MorningState
 
 ProvisioningState = Literal["uninitialized", "ready", "blocked"]
 GrantStatus = Literal["prepared", "active", "paused", "closing"]
@@ -553,10 +554,12 @@ class StoreState:
     reconcile_state: ReconcileState
     pending_audit: tuple[PendingAuditEvent, ...]
     recovery: RecoveryEpisode | None = None
+    morning: MorningState = MorningState()
 
     def __post_init__(self) -> None:
         self._validate_ledger()
         self._validate_recovery()
+        self._validate_morning()
         if self.provisioning_state == "ready" and self.counter_state is None:
             raise StoreStateError("provisioning ready vyzaduje overeny counter_state")
         open_episodes = [e for e in self.episode_ledger if e.state == "open"]
@@ -571,6 +574,20 @@ class StoreState:
                 raise StoreStateError("pending_step odkazuje na episode mimo ledger")
             return
         self._validate_active_grant(open_episodes)
+
+    def _validate_morning(self) -> None:
+        morning = self.morning
+        if morning.phase not in ("none", "morning_dip", "pv_refill"):
+            raise StoreStateError(f"morning.phase neplatna: {morning.phase!r}")
+        floor = morning.floor_state_pct
+        if morning.phase == "pv_refill":
+            if floor is None or not 0 <= floor <= 100:
+                raise StoreStateError("morning pv_refill vyzaduje floor_state_pct 0..100")
+        elif floor is not None:
+            raise StoreStateError("morning.floor_state_pct jen ve fazi pv_refill")
+        if morning.phase != "none" and (self.active_grant is not None
+                                        or self.recovery is not None):
+            raise StoreStateError("morning faze nesmi bezet s grantem ani recovery epizodou")
 
     def _validate_recovery(self) -> None:
         recovery = self.recovery
@@ -659,6 +676,8 @@ class StoreState:
             "reconcile_state": self.reconcile_state.to_dict(),
             "pending_audit": [e.to_dict() for e in self.pending_audit],
             "recovery": None if self.recovery is None else self.recovery.to_dict(),
+            "morning": {"phase": self.morning.phase,
+                        "floor_state_pct": self.morning.floor_state_pct},
         }
 
 
@@ -687,6 +706,16 @@ def parse_store_state(raw: Any) -> StoreState:
     pending_step_raw = raw.get("pending_step")
     # `recovery` arrived after the first v1 files: a missing key = no episode.
     recovery_raw = raw.get("recovery")
+    morning_raw = raw.get("morning")
+    morning = MorningState()
+    if morning_raw is not None:
+        morning_raw = _require_dict(morning_raw, "morning")
+        morning = MorningState(
+            phase=_require_enum(morning_raw.get("phase"),
+                                ("none", "morning_dip", "pv_refill"), "morning.phase"),
+            floor_state_pct=None if morning_raw.get("floor_state_pct") is None
+            else _require_number(morning_raw.get("floor_state_pct"), "morning.floor_state_pct"),
+        )
     return StoreState(
         state_revision=_require_int(raw.get("state_revision"), "state_revision"),
         policy_version=_require_str(raw.get("policy_version"), "policy_version"),
@@ -713,4 +742,5 @@ def parse_store_state(raw: Any) -> StoreState:
         recovery=None
         if recovery_raw is None
         else RecoveryEpisode.from_dict(recovery_raw, "recovery"),
+        morning=morning,
     )

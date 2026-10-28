@@ -95,7 +95,8 @@ def test_valid_snapshot_round_trips_through_json():
     serialized = json.loads(json.dumps(state.to_dict()))
     assert parse_store_state(serialized) == state
     # files written before `recovery` existed parse unchanged; new writes carry the key
-    assert serialized == {**_raw(), "recovery": None}
+    assert serialized == {**_raw(), "recovery": None,
+                          "morning": {"phase": "none", "floor_state_pct": None}}
 
 
 def test_real_payload_exceeds_input_text_limit_and_still_round_trips():
@@ -426,3 +427,30 @@ def test_after_grant_states_need_the_closed_episode():
         parse_store_state(_raw(recovery=_recovery(state="cloudy_hold")))
     with pytest.raises(StoreStateError):
         parse_store_state(_closed_raw(state="cloudy_hold", restore_floors=[150] * 6))
+
+
+# --- morning exception state ---------------------------------------------------------
+
+
+def test_morning_state_round_trips_and_old_files_default_to_none():
+    state = parse_store_state(_raw(active_grant=None, episode_ledger=[],
+                                   morning={"phase": "pv_refill", "floor_state_pct": 15}))
+    assert state.morning.phase == "pv_refill" and state.morning.floor_state_pct == 15
+    assert parse_store_state(json.loads(json.dumps(state.to_dict()))) == state
+    assert parse_store_state(_raw()).morning.phase == "none"  # key missing in old files
+
+
+@pytest.mark.parametrize("morning", [
+    {"phase": "pv_refill", "floor_state_pct": None},   # refill needs its floor
+    {"phase": "pv_refill", "floor_state_pct": 150},
+    {"phase": "morning_dip", "floor_state_pct": 15},   # floor only in refill
+    {"phase": "dawn", "floor_state_pct": None},
+])
+def test_inconsistent_morning_state_is_rejected(morning):
+    with pytest.raises(StoreStateError):
+        parse_store_state(_raw(active_grant=None, episode_ledger=[], morning=morning))
+
+
+def test_morning_phase_cannot_run_with_a_grant():
+    with pytest.raises(StoreStateError):
+        parse_store_state(_raw(morning={"phase": "morning_dip", "floor_state_pct": None}))

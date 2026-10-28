@@ -32,8 +32,15 @@ from .config import EnergyConfig
 from .const import POLICY_VERSION
 from .device_io import DeviceIO, WriteResult
 from .executor import Gates, GrantExecutor, Snapshot
-from .inputs import build_inputs, offpeak_steps, schedule_intervals
+from .floor_table import FloorContext, floor_plan, hold_floor_pct
+from .inputs import (
+    build_inputs,
+    offpeak_steps,
+    schedule_intervals,
+    schedule_nt,
+)
 from .lifecycle import GrantTransitionError, provision, reconcile, reprovision, set_reconcile
+from .morning_flow import MorningInputs, MorningOutcome, plan_morning
 from .profile_receiver import ProfileReceiver, PvForecastReceiver
 from .recovery_flow import RecoveryInputs, RecoveryOutcome, plan_recovery
 from .runtime import EnergyRuntime
@@ -42,6 +49,7 @@ from .state_schema import StoreState
 from .store import StoreNotDurableError
 
 _LOGGER = logging.getLogger(__name__)
+STEP = timedelta(minutes=15)
 
 
 class ProvisionError(Exception):
@@ -61,6 +69,8 @@ class TickStatus:
     writes: list[WriteResult] = field(default_factory=list)
     error: str | None = None
     recovery: RecoveryOutcome | None = None
+    morning: MorningOutcome | None = None
+    floors: dict | None = None  # planned vs actual slot floors (diagnostics only)
 
 
 class EnergyController:
@@ -182,14 +192,90 @@ class EnergyController:
             if runtime.state.reconcile_state.value != "ready":
                 return
 
+        if not await self._plan_morning(snapshot, status):
+            return
         if not await self._plan_recovery(snapshot, readback, status):
             return
+        self._report_floors(snapshot, readback, status)
         report = await self.executor.async_cycle(snapshot)
         status.result = "cycle"
         status.reason = report.reason
         status.intents += report.intents
         status.writes += report.writes
         status.error = report.error
+
+    async def _plan_morning(self, snapshot: Snapshot, status: TickStatus) -> bool:
+        params = self.config.morning
+        if params is None:
+            return True
+        relay = self.hass.states.get(self.config.grid_relay_entity) \
+            if self.config.grid_relay_entity else None
+        inputs = MorningInputs(
+            now=snapshot.now,
+            tz=dt_util.get_default_time_zone(),
+            soc_pct=snapshot.soc_pct if snapshot.telemetry_valid else None,
+            profile=self.profiles.profile,
+            pv=self.pv_forecasts.forecast,
+            grid_present=relay is not None and relay.state == "on",
+            in_recovery=self.runtime.state.recovery is not None,
+        )
+        state = self.runtime.state
+        new_state, outcome = plan_morning(state, inputs, params)
+        status.morning = outcome
+        return new_state == state or await self._commit(new_state, status)
+
+    def _report_floors(self, snapshot: Snapshot, readback: Readback, status: TickStatus) -> None:
+        """Planned slot floors per the floor table next to the actual ones. Nothing is
+        written from this — it shows what the table would do before it may."""
+        params, state = self.config.floor, self.runtime.state
+        if params is None or snapshot.slot_starts is None or state is None:
+            return
+        now, tz = snapshot.now, dt_util.get_default_time_zone()
+        intervals = schedule_intervals(self.hass, self.config, now)
+
+        def is_nt_at(t: datetime) -> bool | None:
+            return None if intervals is None else schedule_nt(intervals, t)
+
+        profile, pv = self.profiles.profile, self.pv_forecasts.forecast
+        reco = self.config.recovery
+        hold = None
+        if profile is not None and pv is not None and reco is not None:
+            def p90(t: datetime) -> float | None:
+                if not profile.horizon_start <= t < profile.horizon_end:
+                    return None
+                return profile.steps[int((t - profile.horizon_start) / STEP)].p90
+
+            hold = hold_floor_pct(now=now, tz=tz, floor_vt_pct=params.floor_vt_pct,
+                                  is_nt_at=is_nt_at, house_p90_kw=p90, pv_kw=pv.kw_at,
+                                  c_use_kwh=reco.c_use_kwh, eta_d=reco.eta_d)
+        grant = state.active_grant
+        recovery = state.recovery
+        target = None
+        if grant is not None:
+            target = grant.identity.target_pct
+        elif recovery is not None and recovery.state == "cloudy_hold":
+            target = recovery.hold_floor_pct
+        entities = replace(self.config.slot_entities, slot_starts=snapshot.slot_starts)
+        charging = current_slot(entities, snapshot.local_time) \
+            if grant is not None and grant.status == "active" else None
+        outcome = status.morning
+        ctx = FloorContext(
+            now=now, tz=tz, slot_starts=snapshot.slot_starts, is_nt_at=is_nt_at,
+            hold_floor_pct=hold, grant_target_pct=target, charging_slot=charging,
+            phase=state.morning.phase, refill_floor_pct=state.morning.floor_state_pct,
+            dip_window=None if outcome is None else outcome.dip_window,
+        )
+        plan = floor_plan(params, ctx)
+        actual = list(readback.slot_capacity)
+        status.floors = {
+            "planned": list(plan.floors),
+            "actual": actual,
+            "kinds": list(plan.kinds),
+            "hold": hold,
+            "reasons": list(plan.reasons),
+            "diff": [i + 1 for i, (a, p) in enumerate(zip(actual, plan.floors, strict=True))
+                     if a is None or abs(a - p) > 0.5],
+        }
 
     async def _plan_recovery(self, snapshot: Snapshot, readback: Readback,
                              status: TickStatus) -> bool:

@@ -11,6 +11,8 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
 
+from .floor_table import FloorParams
+from .morning_flow import MorningParams
 from .recovery_flow import RecoveryParams
 from .slot_plan import SlotEntities
 
@@ -28,6 +30,12 @@ CONF_FEATURE = "feature_entity"
 # Recovery inputs and parameters (optional; defaults below).
 CONF_PV_TOPIC = "pv_forecast_topic"
 CONF_PROFILE_TOPIC = "house_load_profile_topic"
+CONF_GRID_RELAY = "grid_relay_entity"
+CONF_ENABLE_MORNING_DIP = "enable_morning_dip"
+CONF_COMFORT = "comfort_pct"
+CONF_DIP_FLOOR = "morning_dip_floor_pct"
+CONF_DIP_H = "morning_dip_h"
+CONF_REFILL_MARGIN = "refill_margin_min"
 CONF_TOPOLOGY_EPOCH = "topology_epoch"
 CONF_RESERVE = "reserve_pct"
 CONF_RECOVERY_TARGET = "recovery_target_pct"
@@ -49,6 +57,10 @@ NUMBER_OPTIONS: dict[str, tuple[float, float, float]] = {
     CONF_CHARGE_RATE: (1.0, 0.1, 20.0),
     CONF_BUDGET_FACTOR: (1.25, 1.1, 1.5),
     CONF_TOPOLOGY_EPOCH: (1, 1, 99),
+    CONF_COMFORT: (5.0, 0.0, 20.0),
+    CONF_DIP_FLOOR: (10.0, 5.0, 35.0),
+    CONF_DIP_H: (3.0, 0.0, 4.0),
+    CONF_REFILL_MARGIN: (30.0, 0.0, 120.0),
 }
 
 
@@ -89,6 +101,10 @@ class EnergyConfig:
     slot_capacity_entities: tuple[str, ...]
     slot_charge_enable_entities: tuple[str, ...]
     pv_topic: str | None = None
+    grid_relay_entity: str | None = None
+    enable_morning_dip: bool = False
+    floor: FloorParams | None = None
+    morning: MorningParams | None = None
     profile_topic: str | None = None
     budget_factor: float = NUMBER_OPTIONS[CONF_BUDGET_FACTOR][0]
     recovery: RecoveryParams | None = None
@@ -143,6 +159,12 @@ class EnergyConfig:
             return topic
 
         topic, pv_topic = plain_topic(CONF_PROFILE_TOPIC), plain_topic(CONF_PV_TOPIC)
+        if numbers[CONF_DIP_FLOOR] > numbers[CONF_RESERVE] - 5:
+            raise ConfigInvalidError("morning dip floor must be at most reserve - 5")
+        enable_dip = options.get(CONF_ENABLE_MORNING_DIP, False)
+        if not isinstance(enable_dip, bool):
+            raise ConfigInvalidError("enable_morning_dip: expected a boolean")
+        grid_relay = options.get(CONF_GRID_RELAY) or None
 
         return EnergyConfig(
             soc_entity=options[CONF_SOC],
@@ -157,6 +179,25 @@ class EnergyConfig:
             slot_capacity_entities=slots("capacity"),
             slot_charge_enable_entities=slots("charge_enable"),
             pv_topic=pv_topic,
+            grid_relay_entity=grid_relay,
+            enable_morning_dip=enable_dip,
+            floor=FloorParams(
+                reserve_pct=numbers[CONF_RESERVE],
+                comfort_pct=numbers[CONF_COMFORT],
+                dip_floor_pct=numbers[CONF_DIP_FLOOR],
+            ),
+            morning=MorningParams(
+                reserve_pct=numbers[CONF_RESERVE],
+                dip_floor_pct=numbers[CONF_DIP_FLOOR],
+                dip_h=numbers[CONF_DIP_H],
+                refill_margin_min=numbers[CONF_REFILL_MARGIN],
+                c_use_kwh=numbers[CONF_BATTERY_KWH],
+                eta_c=numbers[CONF_ETA],
+                eta_d=numbers[CONF_ETA],
+                e_err_morning_kwh=numbers[CONF_E_ERR_MORNING],
+                topology_epoch=int(numbers[CONF_TOPOLOGY_EPOCH]),
+                enable_morning_dip=enable_dip,
+            ),
             profile_topic=topic,
             budget_factor=numbers[CONF_BUDGET_FACTOR],
             recovery=RecoveryParams(

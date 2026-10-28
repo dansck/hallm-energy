@@ -41,7 +41,13 @@
           "error_margin_morning_kwh": "Morning error margin (kWh DC)",
           "grid_charge_rate_dc_kw": "Grid charge rate (kW DC)",
           "budget_factor": "Budget backup factor",
-          "pv_forecast_topic": "PV forecast topic"
+          "pv_forecast_topic": "PV forecast topic",
+          "grid_relay_entity": "Grid present relay",
+          "enable_morning_dip": "Enable morning exception",
+          "comfort_pct": "Comfort margin (%)",
+          "morning_dip_floor_pct": "Morning dip floor (%)",
+          "morning_dip_h": "Morning dip window (h)",
+          "refill_margin_min": "Refill margin (min)"
         },
         "data_description": {
           "soc_entity": "Sensor with the battery state of charge (%).",
@@ -80,7 +86,13 @@
           "error_margin_morning_kwh": "Extra energy PV must add on top of the reserve before waiting is accepted.",
           "grid_charge_rate_dc_kw": "Assumed rate for sizing the off-peak window.",
           "budget_factor": "Grant closes once usage reaches budget × factor (backup to the SOC stop).",
-          "pv_forecast_topic": "Retained MQTT topic with the PV production forecast snapshot (correction already applied). Without a current one PV is never credited."
+          "pv_forecast_topic": "Retained MQTT topic with the PV production forecast snapshot (correction already applied). Without a current one PV is never credited.",
+          "grid_relay_entity": "Binary sensor that is on while the grid is present (e.g. the inverter's AC grid relay). Without it the integration assumes an island and never enters the morning exception.",
+          "enable_morning_dip": "Activation gate: lets the battery fall to the morning dip floor before sunrise when PV is forecast to restore the reserve. Off by default.",
+          "comfort_pct": "Added to the reserve to get the high-tariff floor.",
+          "morning_dip_floor_pct": "Lowest floor inside the morning window; at most reserve - 5.",
+          "morning_dip_h": "How long before the PV start the dip floor may apply.",
+          "refill_margin_min": "Safety margin before the end of useful PV."
         }
       }
     },
@@ -133,7 +145,13 @@
           "error_margin_morning_kwh": "Morning error margin (kWh DC)",
           "grid_charge_rate_dc_kw": "Grid charge rate (kW DC)",
           "budget_factor": "Budget backup factor",
-          "pv_forecast_topic": "PV forecast topic"
+          "pv_forecast_topic": "PV forecast topic",
+          "grid_relay_entity": "Grid present relay",
+          "enable_morning_dip": "Enable morning exception",
+          "comfort_pct": "Comfort margin (%)",
+          "morning_dip_floor_pct": "Morning dip floor (%)",
+          "morning_dip_h": "Morning dip window (h)",
+          "refill_margin_min": "Refill margin (min)"
         },
         "data_description": {
           "soc_entity": "Sensor with the battery state of charge (%).",
@@ -172,7 +190,13 @@
           "error_margin_morning_kwh": "Extra energy PV must add on top of the reserve before waiting is accepted.",
           "grid_charge_rate_dc_kw": "Assumed rate for sizing the off-peak window.",
           "budget_factor": "Grant closes once usage reaches budget × factor (backup to the SOC stop).",
-          "pv_forecast_topic": "Retained MQTT topic with the PV production forecast snapshot (correction already applied). Without a current one PV is never credited."
+          "pv_forecast_topic": "Retained MQTT topic with the PV production forecast snapshot (correction already applied). Without a current one PV is never credited.",
+          "grid_relay_entity": "Binary sensor that is on while the grid is present (e.g. the inverter's AC grid relay). Without it the integration assumes an island and never enters the morning exception.",
+          "enable_morning_dip": "Activation gate: lets the battery fall to the morning dip floor before sunrise when PV is forecast to restore the reserve. Off by default.",
+          "comfort_pct": "Added to the reserve to get the high-tariff floor.",
+          "morning_dip_floor_pct": "Lowest floor inside the morning window; at most reserve - 5.",
+          "morning_dip_h": "How long before the PV start the dip floor may apply.",
+          "refill_margin_min": "Safety margin before the end of useful PV."
         }
       }
     },

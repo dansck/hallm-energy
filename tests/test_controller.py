@@ -293,3 +293,50 @@ async def test_local_tomorrow_spans_dst_change(hass):
     start, end = _local_tomorrow(datetime(2026, 10, 24, 20, 0, tzinfo=UTC))  # 22:00 CEST
     assert start == datetime(2026, 10, 24, 22, 0, tzinfo=UTC)  # 25. 10. 00:00 CEST
     assert end - start == timedelta(hours=25)  # clocks go back that night
+
+
+# --- floor table diagnostics and the morning gate (shadow) ----------------------------------
+
+
+def _d57d_schedule(first_day=27, days=4):
+    """D57d (VT 06-07, 09-10, 13-14, 16-17 local) as consecutive intervals."""
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+
+    tz = ZoneInfo("Europe/Prague")
+    out = []
+    for d in range(days):
+        for hour in range(24):
+            start = datetime(2026, 10, first_day + d, hour, tzinfo=tz)
+            end = start + timedelta(hours=1)
+            out.append({"start": start.isoformat(), "end": end.isoformat(),
+                        "tariff": "VT" if hour in (6, 9, 13, 16) else "NT"})
+    return out
+
+
+async def test_floor_plan_is_reported_next_to_the_actual_floors_and_never_written(
+        storage_hass, inverter):
+    from tests.test_inputs import set_telemetry
+
+    await storage_hass.config.async_set_time_zone("Europe/Prague")
+    set_telemetry(storage_hass, schedule=_d57d_schedule(), soc="50.0")
+    controller = await _controller(storage_hass, empty_state(), live=True)
+    status = await controller.async_tick()
+    floors = status.floors
+    # 23:15 local: VT slots 25, off-peak day slots floor_vt (no profile for the hold),
+    # the night slot = the reserve
+    assert floors["planned"] == [25, 25, 25, 25, 25, 20]
+    assert floors["kinds"] == ["vt", "nt_day", "vt", "mixed", "vt", "nt_night"]
+    assert floors["actual"] == [20.0] * 6 and floors["diff"] == [1, 2, 3, 4, 5]
+    assert inverter.calls == []  # diagnostics only, even in live mode
+
+
+async def test_morning_exception_stays_off_by_default(storage_hass, inverter):
+    from tests.test_inputs import set_telemetry
+
+    set_telemetry(storage_hass, soc="15.0")
+    controller = await _controller(storage_hass, empty_state(), live=False)
+    assert controller.config.enable_morning_dip is False
+    status = await controller.async_tick()
+    assert controller.runtime.state.morning.phase == "none"
+    assert status.morning is not None and status.morning.phase == "none"

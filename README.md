@@ -43,11 +43,25 @@ In place:
   already restored floor back; a floor changed from outside blocks all floor
   writes (diagnosed, not overwritten).
 
+- the floor table: the discharge floor of every slot is worked out from the
+  tariff schedule (not from the slot index) — high tariff: reserve + comfort,
+  off-peak during the day: that plus what the remaining high-tariff blocks need
+  beyond the PV forecast, off-peak after the last high tariff: the reserve —
+  with the morning exception and grants overlaid. For now it is only REPORTED
+  next to the actual floors in the status sensor (`floors`); nothing is
+  written from it yet;
+- the morning exception: before sunrise the battery may fall to a lower floor
+  when PV is forecast to restore the reserve by the end of useful PV. It is
+  behind an activation gate (`Enable morning exception`, off by default), needs
+  the grid present, a current profile and forecast covering the whole window,
+  and never runs together with a recovery grant. SOC below the reserve inside
+  it is not a recovery trigger.
+
 In shadow, grants are created and tracked like in live mode, but nothing is
 written to the inverter.
 
-Not implemented yet: managing the normal floor schedule itself (the
-integration restores the floors it found), planned loads such as an EV with a
+Not implemented yet: writing the table floors (the integration still only
+restores the floors it found after a grant), planned loads such as an EV with a
 deadline, and the history outbox.
 
 ## Configuration
@@ -64,6 +78,7 @@ entities (all of them can be changed later in the integration's options):
 | Shadow switch, feature switch | input booleans |
 | PV forecast topic (optional) | retained MQTT topic with the PV production snapshot: times of retrieval and (if the source states it) issue, validity, 15-minute kW with the correction already applied |
 | House load profile topic (optional) | retained MQTT topic |
+| Grid present relay (optional), enable morning exception | binary sensor on while the grid is present (without it the morning exception never starts); gate, off by default |
 
 Recovery parameters (reserve, target, wait for PV, battery capacity and
 efficiency, budget factor, …) have defaults and can be changed
