@@ -34,6 +34,7 @@ from .slot_plan import (
     enable_ops,
     floors_at_least,
     is_prepared,
+    matches,
     prepare_ops,
     stop_ops,
 )
@@ -183,6 +184,7 @@ class GrantExecutor:
             if step_id is not None:
                 await self._enable(step_id, rev, snapshot, report)
             await self._close_if_stopped(snapshot.now, report)
+            await self._restore_floors(report)
             return report
 
     # --- internals ---------------------------------------------------------------------
@@ -260,6 +262,36 @@ class GrantExecutor:
                 await self.async_safety_stop()
             return False
         return True
+
+    async def _restore_floors(self, report: CycleReport) -> None:
+        """After a recovery grant (`restoring`): write the saved floors back,
+        only with charging verifiably off and no grant — never while enabling."""
+        state = self.runtime.state
+        recovery = None if state is None else state.recovery
+        if (
+            state is None
+            or state.active_grant is not None
+            or recovery is None
+            or recovery.state != "restoring"
+            or recovery.floors_before is None
+        ):
+            return
+        readback = self.io.read_slots(self.entities)
+        if readback.charging_enabled is not False:
+            return
+        ops = [
+            Op(entity, float(floor))
+            for entity, floor, current in zip(self.entities.slot_capacity,
+                                              recovery.floors_before,
+                                              readback.slot_capacity, strict=True)
+            if not matches(Op(entity, float(floor)), current)
+        ]
+        if not ops:
+            return
+        if report.live:
+            report.writes += await self._run(ops, self.safety_revision, enabling=False)
+        else:
+            report.intents += ops
 
     async def _close_if_stopped(self, now: datetime, report: CycleReport) -> None:
         state = self.runtime.state

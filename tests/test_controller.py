@@ -291,3 +291,14 @@ async def test_configured_budget_factor_reaches_executor_and_reconcile(storage_h
     controller = await _controller(storage_hass, empty_state())
     rebuilt = EnergyController(storage_hass, controller.runtime, runtime_config, io=controller.io)
     assert rebuilt.executor.budget_factor == 1.1
+
+
+async def test_local_tomorrow_spans_dst_change(hass):
+    from datetime import UTC, datetime
+
+    from custom_components.hallm_energy.controller import _local_tomorrow
+
+    await hass.config.async_set_time_zone("Europe/Prague")
+    start, end = _local_tomorrow(datetime(2026, 10, 24, 20, 0, tzinfo=UTC))  # 22:00 CEST
+    assert start == datetime(2026, 10, 24, 22, 0, tzinfo=UTC)  # 25. 10. 00:00 CEST
+    assert end - start == timedelta(hours=25)  # clocks go back that night

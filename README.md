@@ -34,13 +34,18 @@ In place:
   load profile until a deadline anchored at entry; PV is credited only with a
   current, complete, good-quality profile. Otherwise a grid grant to the
   recovery target is prepared over the next off-peak steps, one per episode;
-  an expired window is extended with the same identity and budget.
+  an expired window is extended with the same identity and budget;
+- after the grant: the floors stay at the target while tomorrow's corrected
+  PV minus the house load is negative or cannot be judged (no repeated
+  discharge and re-buy); otherwise the slot floors saved when the grant was
+  prepared are written back (charging verifiably off) and the episode ends.
 
 In shadow, grants are created and tracked like in live mode, but nothing is
 written to the inverter.
 
-Not implemented yet: restoring normal floors after a grant (floors stay
-raised to the target), and the history outbox.
+Not implemented yet: managing the normal floor schedule itself (the
+integration restores the floors it found), planned loads such as an EV with a
+deadline, and the history outbox.
 
 ## Configuration
 

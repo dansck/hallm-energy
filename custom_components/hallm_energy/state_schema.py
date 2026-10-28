@@ -31,8 +31,10 @@ _PROVISIONING_STATES = ("uninitialized", "ready", "blocked")
 _GRANT_STATUSES = ("prepared", "active", "paused", "closing")
 _EPISODE_STATES = ("open", "closed")
 _RECONCILE_VALUES = ("required", "running", "ready", "blocked")
-RecoveryValue = Literal["wait_pv", "grid_recovery"]
-_RECOVERY_VALUES = ("wait_pv", "grid_recovery")
+RecoveryValue = Literal["wait_pv", "grid_recovery", "cloudy_hold", "restoring"]
+_RECOVERY_VALUES = ("wait_pv", "grid_recovery", "cloudy_hold", "restoring")
+# after the grant closed: floors held at the target, or being restored
+_RECOVERY_AFTER_GRANT = ("cloudy_hold", "restoring")
 _GRANT_PURPOSES = ("recovery", "econ")
 _OPERATION_STATUSES = ("sent", "confirmed", "unknown", "failed")
 
@@ -469,7 +471,10 @@ class PendingAuditEvent:
 @dataclass(frozen=True)
 class RecoveryEpisode:
     """One recovery episode below the reserve. `wait_until` is anchored on
-    entry and never moves; `grid_recovery` = its grant exists (same episode)."""
+    entry and never moves; `grid_recovery` = its grant exists (same episode).
+    After the grant closed: `cloudy_hold` keeps the floors at the target,
+    `restoring` writes back `floors_before` (slot floors when the grant was
+    prepared); the episode ends once they read back."""
 
     episode_id: str
     entered_at: datetime
@@ -477,10 +482,17 @@ class RecoveryEpisode:
     state: RecoveryValue
     decided_at: datetime
     reason_code: str | None = None  # why PV could not be credited, or the grant could not start
+    floors_before: tuple[float, ...] | None = None
 
     def __post_init__(self) -> None:
         if self.wait_until <= self.entered_at:
             raise StoreStateError("recovery.wait_until musi byt po entered_at")
+        if self.state == "restoring" and self.floors_before is None:
+            raise StoreStateError("recovery restoring vyzaduje floors_before")
+        if self.floors_before is not None and not all(
+            0 <= f <= 100 for f in self.floors_before
+        ):
+            raise StoreStateError("recovery.floors_before mimo 0..100")
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -490,6 +502,7 @@ class RecoveryEpisode:
             "state": self.state,
             "decided_at": _epoch(self.decided_at),
             "reason_code": self.reason_code,
+            "floors_before": None if self.floors_before is None else list(self.floors_before),
         }
 
     @staticmethod
@@ -502,7 +515,16 @@ class RecoveryEpisode:
             state=_require_enum(raw.get("state"), _RECOVERY_VALUES, f"{where}.state"),
             decided_at=_parse_epoch(raw.get("decided_at"), f"{where}.decided_at"),
             reason_code=_require_optional_str(raw.get("reason_code"), f"{where}.reason_code"),
+            floors_before=_parse_floors(raw.get("floors_before"), f"{where}.floors_before"),
         )
+
+
+def _parse_floors(raw: Any, where: str) -> tuple[float, ...] | None:
+    if raw is None:
+        return None
+    if not isinstance(raw, list) or not raw:
+        raise StoreStateError(f"{where}: ocekavan neprazdny seznam nebo null")
+    return tuple(_require_number(v, f"{where}[{i}]") for i, v in enumerate(raw))
 
 
 # --- StoreState (root) -------------------------------------------------------------------
@@ -547,8 +569,13 @@ class StoreState:
         grant = self.active_grant
         if recovery is None:
             return
-        if any(e.episode_id == recovery.episode_id and e.state == "closed"
-               for e in self.episode_ledger):
+        closed = any(e.episode_id == recovery.episode_id and e.state == "closed"
+                     for e in self.episode_ledger)
+        if recovery.state in _RECOVERY_AFTER_GRANT:
+            if not closed or grant is not None:
+                raise StoreStateError(f"recovery {recovery.state} jen po uzavrenem grantu")
+            return
+        if closed:
             raise StoreStateError("recovery odkazuje na uzavrenou episode")
         if recovery.state == "grid_recovery":
             if grant is None or grant.identity.episode_id != recovery.episode_id:

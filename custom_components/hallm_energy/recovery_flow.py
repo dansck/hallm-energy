@@ -10,8 +10,13 @@
 * `grid_recovery` prepares the grant in the same episode, persisted before
   anything enables. No off-peak window known = no grant yet, reason recorded.
 * With a grant: an expired window is extended over future off-peak steps for
-  the remaining budget, same ID. The episode ends with the grant
-  (`confirm_closed`), or without one once the reserve is restored.
+  the remaining budget, same ID. Without a grant the episode ends once the
+  reserve is restored.
+* After the grant closed (`floor_after_recovery`): `cloudy_hold` keeps the
+  floors at the target while tomorrow's corrected PV minus the house load is
+  negative — or cannot be judged (no usable profile/forecast); otherwise
+  `restoring` writes back the slot floors saved when the grant was prepared,
+  and the episode ends once they read back. Unknown saved floors = hold.
 """
 
 from __future__ import annotations
@@ -25,6 +30,7 @@ from .energy_core.grant import CounterReading
 from .energy_core.house_load import HouseLoadProfile, wait_pv_blocker
 from .energy_core.recovery import STEP_MINUTES, recovery_decision
 from .lifecycle import extend_window, prepare_grant
+from .slot_plan import CAPACITY_TOLERANCE_PCT
 from .state_schema import RecoveryEpisode, StoreState
 
 STEP = timedelta(minutes=STEP_MINUTES)
@@ -53,11 +59,14 @@ class RecoveryInputs:
     pv_ac_kw: Callable[[datetime], float] | None  # corrected (P10) forecast; None = unusable
     profile: HouseLoadProfile | None
     nt_steps: Sequence[datetime]  # future off-peak step starts per the schedule
+    floors: tuple[float | None, ...] = ()  # current slot floors (readback)
+    tomorrow: tuple[datetime, datetime] | None = None  # local tomorrow as UTC [start, end)
 
 
 @dataclass(frozen=True)
 class RecoveryOutcome:
-    action: str  # none | entered | wait_pv | grant_prepared | no_window | window_extended | ended
+    action: str  # none | entered | wait_pv | grant_prepared | no_window | window_extended
+    #              | hold | restoring | ended
     reason: str | None = None
     pv_blocker: str | None = None
 
@@ -106,6 +115,8 @@ def plan_recovery(
         return _maintain_grant(state, inputs, params, now)
 
     recovery = state.recovery
+    if recovery is not None and recovery.state in ("cloudy_hold", "restoring"):
+        return _after_grant(state, recovery, inputs, params)
     soc = inputs.soc_pct
     if soc is None:
         return state, RecoveryOutcome("none", "telemetry_invalid")
@@ -171,7 +182,10 @@ def plan_recovery(
         policy_version=policy_version,
         deadline_at=recovery.wait_until,
     )
-    episode = replace(recovery, state="grid_recovery", decided_at=now, reason_code=blocker)
+    floors = inputs.floors
+    floors_before = tuple(floors) if floors and None not in floors else None
+    episode = replace(recovery, state="grid_recovery", decided_at=now, reason_code=blocker,
+                      floors_before=floors_before)
     return replace(prepared, recovery=episode), RecoveryOutcome("grant_prepared", None, blocker)
 
 
@@ -193,3 +207,55 @@ def _maintain_grant(state: StoreState, inputs: RecoveryInputs, params: RecoveryP
     if new_end is None or new_end <= grant.window.end:
         return state, RecoveryOutcome("none", "no_offpeak_window")
     return extend_window(state, new_end=new_end, now=now), RecoveryOutcome("window_extended")
+
+
+def tomorrow_balance_kwh(pv: Callable[[datetime], float], profile: HouseLoadProfile,
+                         start: datetime, end: datetime) -> float:
+    """Corrected PV minus house load (P50) over [start, end), kWh AC."""
+    total, t = 0.0, start
+    while t < end:
+        house = profile.p50_at(t)
+        if house is None:
+            return -math.inf
+        total += (pv(t) - house) * STEP_MINUTES / 60
+        t += STEP
+    return total
+
+
+def _after_grant(state: StoreState, recovery: RecoveryEpisode, inputs: RecoveryInputs,
+                 params: RecoveryParams) -> tuple[StoreState, RecoveryOutcome]:
+    now = inputs.now
+    before = recovery.floors_before
+    if before is None:
+        return _with_recovery(state, replace(recovery, state="cloudy_hold",
+                                             reason_code="floors_unknown")), \
+            RecoveryOutcome("hold", "floors_unknown")
+    if recovery.state == "restoring":
+        current = inputs.floors
+        if len(current) == len(before) and all(
+            c is not None and abs(c - b) <= CAPACITY_TOLERANCE_PCT
+            for c, b in zip(current, before, strict=True)
+        ):
+            return replace(state, state_revision=state.state_revision + 1, recovery=None), \
+                RecoveryOutcome("ended", "floors_restored")
+        return state, RecoveryOutcome("restoring")
+
+    blocker = None
+    if inputs.tomorrow is None:
+        blocker = "tomorrow_unknown"
+    else:
+        blocker = wait_pv_blocker(inputs.profile, now=now, required_end=inputs.tomorrow[1],
+                                  topology_epoch=params.topology_epoch)
+        if blocker is None and inputs.pv_ac_kw is None:
+            blocker = "pv_forecast_unusable"
+    if blocker is not None:
+        return _with_recovery(state, replace(recovery, reason_code=blocker)), \
+            RecoveryOutcome("hold", blocker, blocker)
+    assert inputs.tomorrow is not None and inputs.pv_ac_kw is not None
+    assert inputs.profile is not None
+    balance = tomorrow_balance_kwh(inputs.pv_ac_kw, inputs.profile, *inputs.tomorrow)
+    if balance < 0:
+        return _with_recovery(state, replace(recovery, reason_code="cloudy")), \
+            RecoveryOutcome("hold", "cloudy")
+    return _with_recovery(state, replace(recovery, state="restoring", decided_at=now,
+                                         reason_code=None)), RecoveryOutcome("restoring")

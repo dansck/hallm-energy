@@ -22,7 +22,7 @@ import asyncio
 import logging
 from collections.abc import Callable
 from dataclasses import dataclass, field, replace
-from datetime import datetime
+from datetime import datetime, timedelta
 from uuid import uuid4
 
 from homeassistant.core import HomeAssistant
@@ -209,6 +209,8 @@ class EnergyController:
             pv_ac_kw=pv_forecast(self.hass, self.config, now),
             profile=self.profiles.profile,
             nt_steps=offpeak_steps(schedule_intervals(self.hass, self.config, now), now),
+            floors=readback.slot_capacity,
+            tomorrow=_local_tomorrow(now),
         )
         state = self.runtime.state
         new_state, outcome = plan_recovery(state, inputs, params, new_id=lambda: uuid4().hex,
@@ -250,3 +252,11 @@ class EnergyController:
             status.error = f"state not persisted: {exc}"
             return False
         return True
+
+
+def _local_tomorrow(now: datetime) -> tuple[datetime, datetime]:
+    """Tomorrow in local time as a UTC [start, end) (23/25 h on DST days)."""
+    today = dt_util.as_local(now).date()
+    start = dt_util.start_of_local_day(today + timedelta(days=1))
+    end = dt_util.start_of_local_day(today + timedelta(days=2))
+    return dt_util.as_utc(start), dt_util.as_utc(end)

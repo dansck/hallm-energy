@@ -5,6 +5,7 @@ end of episode, restart without a new budget."""
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -220,20 +221,89 @@ def test_expired_window_is_extended_same_id_and_budget():
     assert extended.pending_audit[-1].payload["kind"] == "grant_window_extended"
 
 
-def test_closing_the_grant_ends_the_episode():
-    state = _granted()
-    # charge to target: step proposes, then close on target
+FLOORS = (10.0, 10.0, 10.0, 10.0, 10.0, 20.0)
+RAISED = (25.0,) * 6
+TOMORROW = (datetime(2026, 10, 28, 23, 0, tzinfo=UTC), datetime(2026, 10, 29, 23, 0, tzinfo=UTC))
+
+
+def _closed(floors=FLOORS):
+    """Grant prepared with the given floors, charged to target and closed."""
+    state, _ = _plan(empty_state(), replace(_inputs(pv=lambda _t: 0.0), floors=floors))
     t = NOW + timedelta(hours=3)
     result = step_grant(state, now=t, soc_now_pct=25.0,
                         reading=CounterReading(COUNTER, 7209.0, t), reading_epoch="e1",
                         telemetry_valid=True, is_nt=lambda _t: True, deye_prepared=True,
                         safety_revision=1)
-    closed = confirm_closed(result.state, now=t)
-    assert closed.active_grant is None and closed.recovery is None
-    # a new drop is a new episode with a new id, never the closed one
-    new_state, outcome = _plan(closed, _inputs(now=t + timedelta(days=1), pv=lambda _t: 0.0))
+    return state, confirm_closed(result.state, now=t)
+
+
+def _after(now, *, pv=_sunny, profile="default", floors=RAISED, soc=25.0):
+    profile = _profile(now=now, hours=60) if profile == "default" else profile
+    return replace(_inputs(now=now, soc=soc, pv=pv, profile=profile), floors=floors,
+                   tomorrow=TOMORROW)
+
+
+def test_grant_creation_saves_the_floors():
+    state, _ = _plan(empty_state(), replace(_inputs(pv=lambda _t: 0.0), floors=FLOORS))
+    assert state.recovery.floors_before == FLOORS
+
+
+def test_closing_the_grant_holds_floors_until_decided():
+    prepared, closed = _closed()
+    assert closed.active_grant is None
+    assert closed.recovery.state == "cloudy_hold"
+    assert closed.recovery.episode_id == prepared.recovery.episode_id
+    assert parse_store_state(json.loads(json.dumps(closed.to_dict()))) == closed
+
+
+def test_cloudy_tomorrow_keeps_holding_at_target():
+    _, closed = _closed()
+    t = NOW + timedelta(hours=4)
+    held, outcome = _plan(closed, _after(t, pv=lambda _t: 0.0))
+    assert outcome.action == "hold" and outcome.reason == "cloudy"
+    assert held.recovery.state == "cloudy_hold"
+
+
+@pytest.mark.parametrize(("pv", "profile", "reason"), [
+    (_sunny, None, "profile_missing"),
+    (None, "default", "pv_forecast_unusable"),
+    (_sunny, _profile(status="degraded", hours=60), "profile_quality_degraded"),
+])
+def test_unjudgeable_tomorrow_keeps_holding(pv, profile, reason):
+    _, closed = _closed()
+    t = NOW + timedelta(hours=4)
+    if profile is not None and profile != "default":
+        profile = _profile(now=t, status="degraded", hours=60)
+    held, outcome = _plan(closed, _after(t, pv=pv, profile=profile))
+    assert outcome.action == "hold" and outcome.reason == reason
+
+
+def test_sunny_tomorrow_restores_then_ends_when_floors_read_back():
+    prepared, closed = _closed()
+    t = NOW + timedelta(hours=4)
+    restoring, outcome = _plan(closed, _after(t))
+    assert outcome.action == "restoring" and restoring.recovery.state == "restoring"
+    still, outcome = _plan(restoring, _after(t + timedelta(minutes=1)))  # floors not back yet
+    assert outcome.action == "restoring" and still == restoring
+    done, outcome = _plan(restoring, _after(t + timedelta(minutes=2), floors=FLOORS))
+    assert outcome.action == "ended" and done.recovery is None
+    # a later drop is a new episode with a new id
+    new_state, outcome = _plan(done, _inputs(now=t + timedelta(days=1), pv=lambda _t: 0.0))
     assert outcome.action == "grant_prepared"
-    assert new_state.recovery.episode_id != state.recovery.episode_id
+    assert new_state.recovery.episode_id != prepared.recovery.episode_id
+
+
+def test_unknown_saved_floors_hold_for_good():
+    _, closed = _closed(floors=(10.0, None, 10.0, 10.0, 10.0, 20.0))
+    assert closed.recovery.floors_before is None
+    held, outcome = _plan(closed, _after(NOW + timedelta(hours=4)))
+    assert outcome.action == "hold" and outcome.reason == "floors_unknown"
+
+
+def test_no_new_episode_while_holding():
+    _, closed = _closed()
+    held, outcome = _plan(closed, _after(NOW + timedelta(hours=4), pv=lambda _t: 0.0, soc=15.0))
+    assert outcome.action == "hold" and held.active_grant is None
 
 
 def test_restart_keeps_episode_and_budget():

@@ -496,7 +496,8 @@ def confirm_closed(state: StoreState, *, now: datetime) -> StoreState:
     )
     recovery = state.recovery
     if recovery is not None and recovery.episode_id == episode_id:
-        recovery = None  # the episode ends with its grant
+        # floors stay at the target until the next cycle decides hold vs restore
+        recovery = replace(recovery, state="cloudy_hold", decided_at=now, reason_code=None)
     return _bump(state, active_grant=None, episode_ledger=ledger, pending_audit=audit,
                  recovery=recovery)
 

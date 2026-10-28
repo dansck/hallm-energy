@@ -402,3 +402,22 @@ def test_inconsistent_recovery_is_rejected(over, ledger_keep):
     raw["episode_ledger"] = raw["episode_ledger"][:ledger_keep]
     with pytest.raises(StoreStateError):
         parse_store_state(raw)
+
+
+def _closed_raw(**rec):
+    raw = _raw(active_grant=None, recovery=_recovery(**rec))
+    raw["episode_ledger"] = raw["episode_ledger"][:1]
+    raw["episode_ledger"][0] = {**raw["episode_ledger"][0], "episode_id": "e1"}
+    return raw
+
+
+def test_after_grant_states_need_the_closed_episode():
+    state = parse_store_state(_closed_raw(state="cloudy_hold", floors_before=[10] * 5 + [20]))
+    assert state.recovery.floors_before == (10.0,) * 5 + (20.0,)
+    assert parse_store_state(_closed_raw(state="restoring", floors_before=[10] * 6)) is not None
+    with pytest.raises(StoreStateError):  # restoring without saved floors
+        parse_store_state(_closed_raw(state="restoring"))
+    with pytest.raises(StoreStateError):  # hold while the grant is still open
+        parse_store_state(_raw(recovery=_recovery(state="cloudy_hold")))
+    with pytest.raises(StoreStateError):
+        parse_store_state(_closed_raw(state="cloudy_hold", floors_before=[150] * 6))
