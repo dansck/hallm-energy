@@ -140,7 +140,8 @@ async def test_house_load_profile_arrives_over_mqtt(storage_hass, inverter, mqtt
 
     hass = storage_hass
     entry = MockConfigEntry(domain=DOMAIN, options={**OPTIONS,
-                                                    "house_load_profile_topic": "test/profile"})
+                                                    "house_load_profile_topic": "test/profile",
+                                                    "pv_forecast_topic": "test/pv"})
     entry.add_to_hass(hass)
     assert await hass.config_entries.async_setup(entry.entry_id)
     await _settle(hass)
@@ -148,6 +149,12 @@ async def test_house_load_profile_arrives_over_mqtt(storage_hass, inverter, mqtt
     async_fire_mqtt_message(hass, "test/profile", json.dumps(profile.to_dict()), retain=True)
     await _settle(hass)
     assert entry.runtime_data.controller.profiles.profile == profile
+    from tests.test_recovery_flow import _forecast, _sunny
+
+    forecast = _forecast(_sunny, now=NOW)
+    async_fire_mqtt_message(hass, "test/pv", json.dumps(forecast.to_dict()), retain=True)
+    await _settle(hass)
+    assert entry.runtime_data.controller.pv_forecasts.forecast == forecast
     async_fire_mqtt_message(hass, "test/profile", "not json")
     await _settle(hass)
     assert entry.runtime_data.controller.profiles.error.startswith("invalid")

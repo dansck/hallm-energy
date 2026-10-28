@@ -18,7 +18,7 @@ from .config import (
     CONF_HDO_RELAY,
     CONF_HDO_SCHEDULE,
     CONF_PROFILE_TOPIC,
-    CONF_PV_FORECAST,
+    CONF_PV_TOPIC,
     CONF_SHADOW,
     CONF_SOC,
     NUMBER_OPTIONS,
@@ -52,7 +52,7 @@ def _schema() -> vol.Schema:
         fields[vol.Required(slot_key("charge_enable", i))] = _entity(_SWITCHES)
     fields[vol.Required(CONF_SHADOW)] = _entity(_SWITCHES)
     fields[vol.Required(CONF_FEATURE)] = _entity(_SWITCHES)
-    fields[vol.Optional(CONF_PV_FORECAST)] = _entity("sensor")
+    fields[vol.Optional(CONF_PV_TOPIC)] = selector.TextSelector()
     fields[vol.Optional(CONF_PROFILE_TOPIC)] = selector.TextSelector()
     for key, (default, low, high) in NUMBER_OPTIONS.items():
         fields[vol.Required(key, default=default)] = selector.NumberSelector(

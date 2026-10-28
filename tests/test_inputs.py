@@ -196,64 +196,8 @@ async def test_unavailable_slot_start_invalidates_telemetry(hass, at_now):
 
 from custom_components.hallm_energy.inputs import (  # noqa: E402
     offpeak_steps,
-    pv_forecast,
     schedule_intervals,
 )
-
-PV = "sensor.pv_forecast"
-PV_CONFIG = EnergyConfig.from_options({**OPTIONS, "pv_forecast_entity": PV, "pv_correction": 0.75})
-
-
-def _pv_state(hass, *, start=None, watts=4000, days=("today", "tomorrow"),
-              issued=NOW - timedelta(hours=1), state="0.0", **extra):
-    start = start or NOW.replace(hour=0, minute=0)
-    attrs = dict(extra)
-    if issued is not None:
-        attrs["issued_at"] = issued.isoformat()
-    for i, day in enumerate(days):
-        base = start + timedelta(days=i)
-        attrs[f"profile_{day}_timestamps"] = [
-            (base + timedelta(minutes=15 * k)).isoformat() for k in range(96)]
-        attrs[f"profile_{day}_w"] = [watts] * 96
-    hass.states.async_set(PV, state, attrs)
-
-
-async def test_pv_forecast_applies_correction_exactly_once(hass):
-    _pv_state(hass)
-    pv, reason = pv_forecast(hass, PV_CONFIG, NOW)
-    assert reason is None and pv(NOW) == pytest.approx(4.0 * 0.75)
-    assert pv(NOW + timedelta(days=3)) == 0.0  # beyond the forecast nothing is credited
-    _pv_state(hass, correction_applied=True)  # the source already corrected it
-    pv, _ = pv_forecast(hass, PV_CONFIG, NOW)
-    assert pv(NOW) == pytest.approx(4.0)
-
-
-@pytest.mark.parametrize(("kwargs", "reason"), [
-    ({"state": "unavailable"}, "pv_forecast_unavailable"),       # attributes kept, entity down
-    ({"state": "unknown"}, "pv_forecast_unavailable"),
-    ({"issued": None}, "pv_forecast_issue_time_unknown"),
-    ({"issued": NOW - timedelta(hours=20)}, "pv_forecast_stale"),  # still covers today/tomorrow
-    ({"issued": NOW + timedelta(hours=1)}, "pv_forecast_issued_in_future"),
-    ({"start": NOW.replace(hour=0, minute=0) + timedelta(days=3)}, "pv_forecast_not_covering_now"),
-    ({"watts": -5}, "pv_forecast_malformed"),
-    ({"days": ("today",)}, "pv_forecast_malformed"),
-])
-async def test_pv_forecast_unusable(hass, kwargs, reason):
-    _pv_state(hass, **kwargs)
-    assert pv_forecast(hass, PV_CONFIG, NOW) == (None, reason)
-
-
-async def test_pv_forecast_restart_does_not_refresh_an_old_issue(hass, freezer):
-    freezer.move_to(NOW - timedelta(hours=20))
-    _pv_state(hass, issued=NOW - timedelta(hours=20))
-    freezer.move_to(NOW)  # entity rewritten after a restart: issued_at stays old
-    state = hass.states.get(PV)
-    hass.states.async_set(PV, "0.0", dict(state.attributes), force_update=True)
-    assert pv_forecast(hass, PV_CONFIG, NOW) == (None, "pv_forecast_stale")
-
-
-async def test_pv_forecast_not_configured(hass):
-    assert pv_forecast(hass, CONFIG, NOW) == (None, "pv_forecast_not_configured")
 
 
 async def test_offpeak_steps_only_whole_nt_steps(hass, at_now):

@@ -26,10 +26,9 @@ CONF_SHADOW = "shadow_entity"
 CONF_FEATURE = "feature_entity"
 
 # Recovery inputs and parameters (optional; defaults below).
-CONF_PV_FORECAST = "pv_forecast_entity"
+CONF_PV_TOPIC = "pv_forecast_topic"
 CONF_PROFILE_TOPIC = "house_load_profile_topic"
 CONF_TOPOLOGY_EPOCH = "topology_epoch"
-CONF_PV_CORRECTION = "pv_correction"
 CONF_RESERVE = "reserve_pct"
 CONF_RECOVERY_TARGET = "recovery_target_pct"
 CONF_RECOVERY_WAIT = "recovery_pv_wait_h"
@@ -38,20 +37,17 @@ CONF_ETA = "battery_efficiency"
 CONF_E_ERR_MORNING = "error_margin_morning_kwh"
 CONF_CHARGE_RATE = "grid_charge_rate_dc_kw"
 CONF_BUDGET_FACTOR = "budget_factor"
-CONF_PV_MAX_AGE = "pv_forecast_max_age_h"
 
 # name: (default, minimum, maximum)
 NUMBER_OPTIONS: dict[str, tuple[float, float, float]] = {
     CONF_RESERVE: (20.0, 10.0, 40.0),
     CONF_RECOVERY_TARGET: (25.0, 15.0, 60.0),
     CONF_RECOVERY_WAIT: (36.0, 0.0, 72.0),
-    CONF_PV_CORRECTION: (0.75, 0.3, 1.2),
     CONF_BATTERY_KWH: (46.08, 1.0, 200.0),
     CONF_ETA: (0.95, 0.5, 1.0),
     CONF_E_ERR_MORNING: (2.0, 0.0, 10.0),
     CONF_CHARGE_RATE: (1.0, 0.1, 20.0),
     CONF_BUDGET_FACTOR: (1.25, 1.1, 1.5),
-    CONF_PV_MAX_AGE: (6.0, 1.0, 24.0),
     CONF_TOPOLOGY_EPOCH: (1, 1, 99),
 }
 
@@ -92,11 +88,9 @@ class EnergyConfig:
     slot_start_entities: tuple[str, ...]
     slot_capacity_entities: tuple[str, ...]
     slot_charge_enable_entities: tuple[str, ...]
-    pv_forecast_entity: str | None = None
+    pv_topic: str | None = None
     profile_topic: str | None = None
-    pv_correction: float = NUMBER_OPTIONS[CONF_PV_CORRECTION][0]
     budget_factor: float = NUMBER_OPTIONS[CONF_BUDGET_FACTOR][0]
-    pv_max_age_h: float = NUMBER_OPTIONS[CONF_PV_MAX_AGE][0]
     recovery: RecoveryParams | None = None
 
     @property
@@ -142,10 +136,13 @@ class EnergyConfig:
             numbers[key] = float(value)
         if numbers[CONF_RECOVERY_TARGET] < numbers[CONF_RESERVE] + 5:
             raise ConfigInvalidError("recovery target must be at least reserve + 5")
-        topic = options.get(CONF_PROFILE_TOPIC) or None
-        if topic is not None and (not isinstance(topic, str) or "#" in topic or "+" in topic):
-            raise ConfigInvalidError("house load profile topic must be a plain MQTT topic")
-        pv_entity = options.get(CONF_PV_FORECAST) or None
+        def plain_topic(key: str) -> str | None:
+            topic = options.get(key) or None
+            if topic is not None and (not isinstance(topic, str) or "#" in topic or "+" in topic):
+                raise ConfigInvalidError(f"{key}: expected a plain MQTT topic")
+            return topic
+
+        topic, pv_topic = plain_topic(CONF_PROFILE_TOPIC), plain_topic(CONF_PV_TOPIC)
 
         return EnergyConfig(
             soc_entity=options[CONF_SOC],
@@ -159,11 +156,9 @@ class EnergyConfig:
             slot_start_entities=slots("start"),
             slot_capacity_entities=slots("capacity"),
             slot_charge_enable_entities=slots("charge_enable"),
-            pv_forecast_entity=pv_entity,
+            pv_topic=pv_topic,
             profile_topic=topic,
-            pv_correction=numbers[CONF_PV_CORRECTION],
             budget_factor=numbers[CONF_BUDGET_FACTOR],
-            pv_max_age_h=numbers[CONF_PV_MAX_AGE],
             recovery=RecoveryParams(
                 reserve_pct=numbers[CONF_RESERVE],
                 recovery_target_pct=numbers[CONF_RECOVERY_TARGET],

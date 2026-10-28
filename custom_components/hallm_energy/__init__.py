@@ -92,22 +92,31 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
 async def _subscribe_profile(hass: HomeAssistant, entry: ConfigEntry,
                              controller: EnergyController) -> None:
-    """Retained house load profile over MQTT. Without MQTT (or a topic) there
-    is no profile: PV is never credited and recovery stays conservative."""
-    topic = controller.config.profile_topic
-    if topic is None:
+    """Retained house load profile and PV forecast over MQTT. Without MQTT (or
+    a topic) there is nothing to credit PV with: recovery stays conservative."""
+    subscriptions = [
+        (controller.config.profile_topic, controller.profiles),
+        (controller.config.pv_topic, controller.pv_forecasts),
+    ]
+    if not any(topic for topic, _ in subscriptions):
         return
     from homeassistant.components import mqtt
 
     if not await mqtt.async_wait_for_mqtt_client(hass):
-        controller.profiles.error = "mqtt_unavailable"
+        for topic, receiver in subscriptions:
+            if topic:
+                receiver.error = "mqtt_unavailable"
         return
 
-    @callback
-    def received(msg) -> None:
-        controller.profiles.handle(msg.payload, dt_util.utcnow())
+    for topic, receiver in subscriptions:
+        if not topic:
+            continue
 
-    entry.async_on_unload(await mqtt.async_subscribe(hass, topic, received, qos=1))
+        @callback
+        def received(msg, receiver=receiver) -> None:
+            receiver.handle(msg.payload, dt_util.utcnow())
+
+        entry.async_on_unload(await mqtt.async_subscribe(hass, topic, received, qos=1))
 
 
 def _start_loop(hass: HomeAssistant, entry: ConfigEntry, controller: EnergyController) -> None:

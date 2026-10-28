@@ -33,6 +33,7 @@ from datetime import datetime, timedelta
 
 from .energy_core.grant import CounterReading
 from .energy_core.house_load import HouseLoadProfile, wait_pv_blocker
+from .energy_core.pv_forecast import PvForecast, pv_blocker
 from .energy_core.recovery import STEP_MINUTES, recovery_decision
 from .lifecycle import extend_window, prepare_grant
 from .slot_plan import CAPACITY_TOLERANCE_PCT
@@ -61,7 +62,7 @@ class RecoveryInputs:
     current_floor_pct: float | None
     reading: CounterReading
     reading_epoch: str
-    pv_ac_kw: Callable[[datetime], float] | None  # corrected (P10) forecast; None = unusable
+    pv: PvForecast | None  # snapshot with the correction already applied; None = none received
     profile: HouseLoadProfile | None
     nt_steps: Sequence[datetime]  # future off-peak step starts per the schedule
     floors: tuple[float | None, ...] = ()  # current slot floors (readback)
@@ -77,16 +78,34 @@ class RecoveryOutcome:
     pv_blocker: str | None = None
 
 
+def _blocker(inputs: RecoveryInputs, required_end: datetime,
+             params: RecoveryParams) -> str | None:
+    """Both the house load profile and the PV forecast must cover [now, required_end)."""
+    return wait_pv_blocker(
+        inputs.profile, now=inputs.now, required_end=required_end,
+        topology_epoch=params.topology_epoch,
+    ) or pv_blocker(
+        inputs.pv, now=inputs.now, required_end=required_end,
+        topology_epoch=params.topology_epoch,
+    )
+
+
+def _pv_kw(forecast: PvForecast) -> Callable[[datetime], float]:
+    def pv(t: datetime) -> float:
+        kw = forecast.kw_at(t)
+        return 0.0 if kw is None else kw  # outside the forecast nothing is credited
+
+    return pv
+
+
 def _surplus(inputs: RecoveryInputs, required_end: datetime,
              params: RecoveryParams) -> tuple[Callable[[datetime], float], str | None]:
-    blocker = wait_pv_blocker(inputs.profile, now=inputs.now, required_end=required_end,
-                              topology_epoch=params.topology_epoch)
-    if blocker is None and inputs.pv_ac_kw is None:
-        blocker = "pv_forecast_unusable"
+    blocker = _blocker(inputs, required_end, params)
     if blocker is not None:
         return (lambda _t: 0.0), blocker
-    profile, pv = inputs.profile, inputs.pv_ac_kw
-    assert profile is not None and pv is not None
+    profile = inputs.profile
+    assert profile is not None and inputs.pv is not None
+    pv = _pv_kw(inputs.pv)
 
     def surplus(t: datetime) -> float:
         house = profile.p50_at(t)
@@ -265,19 +284,13 @@ def _after_grant(state: StoreState, recovery: RecoveryEpisode, inputs: RecoveryI
     if inputs.live and floor_writes(recovery, inputs.floors) is None:
         return _hold(state, recovery, "floor_conflict", now)
 
-    blocker = None
-    if inputs.tomorrow is None:
-        blocker = "tomorrow_unknown"
-    else:
-        blocker = wait_pv_blocker(inputs.profile, now=now, required_end=inputs.tomorrow[1],
-                                  topology_epoch=params.topology_epoch)
-        if blocker is None and inputs.pv_ac_kw is None:
-            blocker = "pv_forecast_unusable"
+    blocker = ("tomorrow_unknown" if inputs.tomorrow is None
+               else _blocker(inputs, inputs.tomorrow[1], params))
     if blocker is not None:
         return _hold(state, recovery, blocker, now, blocker)
-    assert inputs.tomorrow is not None and inputs.pv_ac_kw is not None
+    assert inputs.tomorrow is not None and inputs.pv is not None
     assert inputs.profile is not None
-    if tomorrow_balance_kwh(inputs.pv_ac_kw, inputs.profile, *inputs.tomorrow) < 0:
+    if tomorrow_balance_kwh(_pv_kw(inputs.pv), inputs.profile, *inputs.tomorrow) < 0:
         return _hold(state, recovery, "cloudy", now)
 
     restoring = replace(recovery, state="restoring", reason_code=None,

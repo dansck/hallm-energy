@@ -17,6 +17,11 @@ from custom_components.hallm_energy.energy_core.house_load import (
     ProfileQuality,
     ProfileStep,
 )
+from custom_components.hallm_energy.energy_core.pv_forecast import (
+    PV_STEP,
+    PvForecast,
+    PvStep,
+)
 from custom_components.hallm_energy.lifecycle import confirm_closed, prepare_grant, step_grant
 from custom_components.hallm_energy.profile_receiver import ProfileReceiver
 from custom_components.hallm_energy.recovery_flow import (
@@ -60,12 +65,27 @@ def _nt_steps(now=NOW, count=32):
     return tuple(now + timedelta(hours=2) + i * PROFILE_STEP for i in range(count))
 
 
+def _forecast(fn, *, now=NOW, hours=60, retrieved=None, quality="ok", epoch=1):
+    """PV snapshot per contract from a kW-of-time function (correction already in)."""
+    retrieved = retrieved or now - timedelta(minutes=10)
+    start = retrieved.replace(minute=0, second=0, microsecond=0)
+    steps = tuple(PvStep(start + i * PV_STEP, fn(start + i * PV_STEP),
+                         fn(start + i * PV_STEP) / 0.75) for i in range(hours * 4))
+    return PvForecast(
+        snapshot_id="s", model_name="m", model_version="v", topology_epoch=epoch,
+        retrieved_at=retrieved, source_issued_at=None,
+        valid_until=retrieved + timedelta(hours=6), provider="test", weather_model=None,
+        horizon_start=start, horizon_end=start + timedelta(hours=hours), branches=("a",),
+        corrections={"pv_correction": 0.75}, quality=quality, notes=(), steps=steps)
+
+
 def _inputs(*, now=NOW, soc=13.0, floor=20.0, pv=_sunny, profile="default", steps=None,
             raw=7204.0, available=True):
+    forecast = pv if pv is None or isinstance(pv, PvForecast) else _forecast(pv, now=now)
     return RecoveryInputs(
         now=now, soc_pct=soc, current_floor_pct=floor,
         reading=CounterReading(COUNTER, raw, now, available=available), reading_epoch="e1",
-        pv_ac_kw=pv, profile=_profile(now=now) if profile == "default" else profile,
+        pv=forecast, profile=_profile(now=now) if profile == "default" else profile,
         nt_steps=_nt_steps(now) if steps is None else steps,
     )
 
@@ -115,9 +135,20 @@ def test_unusable_profile_never_authorizes_waiting(profile, blocker):
     assert state.active_grant.identity.episode_id == state.recovery.episode_id
 
 
+@pytest.mark.parametrize(("pv", "reason"), [
+    (_forecast(_sunny, retrieved=NOW - timedelta(hours=7)), "pv_forecast_expired"),
+    (_forecast(_sunny, quality="degraded"), "pv_forecast_quality_degraded"),
+    (_forecast(_sunny, hours=24), "pv_forecast_horizon_short"),
+    (_forecast(_sunny, epoch=2), "pv_forecast_topology_mismatch"),
+])
+def test_unusable_pv_forecast_never_authorizes_waiting(pv, reason):
+    _, outcome = _plan(empty_state(), _inputs(pv=pv))
+    assert outcome.action == "grant_prepared" and outcome.pv_blocker == reason
+
+
 def test_missing_pv_forecast_never_authorizes_waiting():
     _, outcome = _plan(empty_state(), _inputs(pv=None))
-    assert outcome.action == "grant_prepared" and outcome.pv_blocker == "pv_forecast_unusable"
+    assert outcome.action == "grant_prepared" and outcome.pv_blocker == "pv_forecast_missing"
 
 
 def test_cloudy_forecast_creates_grant_to_target_only():
@@ -274,7 +305,7 @@ def test_cloudy_tomorrow_keeps_holding_at_target():
 
 @pytest.mark.parametrize(("pv", "profile", "reason"), [
     (_sunny, None, "profile_missing"),
-    (None, "default", "pv_forecast_unusable"),
+    (None, "default", "pv_forecast_missing"),
     (_sunny, _profile(status="degraded", hours=60), "profile_quality_degraded"),
 ])
 def test_unjudgeable_tomorrow_keeps_holding(pv, profile, reason):
@@ -302,7 +333,7 @@ def test_sunny_tomorrow_restores_then_ends_when_floors_read_back():
 
 
 @pytest.mark.parametrize(("change", "reason"), [
-    ({"pv": None}, "pv_forecast_unusable"),
+    ({"pv": None}, "pv_forecast_missing"),
     ({"profile": None}, "profile_missing"),
     ({"pv": lambda _t: 0.0}, "cloudy"),
 ])
@@ -407,3 +438,20 @@ def test_receiver_keeps_newest_valid_profile():
     bad["steps"].pop()
     receiver.handle(json.dumps(bad), NOW)
     assert receiver.profile == good
+
+
+def test_pv_receiver_keeps_newest_valid_forecast_and_never_refreshes_it():
+    from custom_components.hallm_energy.profile_receiver import PvForecastReceiver
+
+    receiver = PvForecastReceiver()
+    good = _forecast(_sunny)
+    receiver.handle(json.dumps(good.to_dict()), NOW)
+    assert receiver.forecast == good and receiver.error is None
+    receiver.handle("{broken", NOW)
+    assert receiver.forecast == good and receiver.error.startswith("invalid")
+    older = _forecast(_sunny, retrieved=NOW - timedelta(hours=2))
+    receiver.handle(json.dumps(older.to_dict()), NOW)
+    assert receiver.forecast == good and receiver.error == "older_forecast_rejected"
+    # a replay of the same retained message keeps its original retrieval time
+    receiver.handle(json.dumps(good.to_dict()), NOW + timedelta(hours=5))
+    assert receiver.forecast.retrieved_at == good.retrieved_at

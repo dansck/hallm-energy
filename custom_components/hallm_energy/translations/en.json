@@ -31,10 +31,8 @@
           "slot6_start_entity": "Slot 6 start",
           "slot6_capacity_entity": "Slot 6 capacity",
           "slot6_charge_enable_entity": "Slot 6 charge enable",
-          "pv_forecast_entity": "PV forecast",
           "house_load_profile_topic": "House load profile topic",
           "topology_epoch": "Topology epoch",
-          "pv_correction": "PV forecast correction",
           "reserve_pct": "Reserve (%)",
           "recovery_target_pct": "Recovery target (%)",
           "recovery_pv_wait_h": "Wait for PV (h)",
@@ -43,7 +41,7 @@
           "error_margin_morning_kwh": "Morning error margin (kWh DC)",
           "grid_charge_rate_dc_kw": "Grid charge rate (kW DC)",
           "budget_factor": "Budget backup factor",
-          "pv_forecast_max_age_h": "PV forecast max age (h)"
+          "pv_forecast_topic": "PV forecast topic"
         },
         "data_description": {
           "soc_entity": "Sensor with the battery state of charge (%).",
@@ -72,10 +70,8 @@
           "slot6_start_entity": "Start of time-of-use slot 6 (HHMM number).",
           "slot6_capacity_entity": "SOC floor and grid-charge target of slot 6 (%).",
           "slot6_charge_enable_entity": "Grid charging permission of slot 6.",
-          "pv_forecast_entity": "Sensor with issued_at (when the source produced the forecast) and profile_today_* / profile_tomorrow_* attributes (timestamps, W per 15 minutes). Without a usable one PV is never credited.",
           "house_load_profile_topic": "Retained MQTT topic with the house load profile snapshot. Without a usable profile PV is never credited and recovery is conservative.",
           "topology_epoch": "Profiles from another topology are rejected.",
-          "pv_correction": "Applied exactly once to the forecast (conservative P10).",
           "reserve_pct": "Recovery starts below this SOC.",
           "recovery_target_pct": "Grid charging only up to this SOC; at least reserve + 5.",
           "recovery_pv_wait_h": "Anchored deadline for PV to restore the reserve before grid charging.",
@@ -84,7 +80,7 @@
           "error_margin_morning_kwh": "Extra energy PV must add on top of the reserve before waiting is accepted.",
           "grid_charge_rate_dc_kw": "Assumed rate for sizing the off-peak window.",
           "budget_factor": "Grant closes once usage reaches budget × factor (backup to the SOC stop).",
-          "pv_forecast_max_age_h": "Older forecasts (by their issued_at) are not credited."
+          "pv_forecast_topic": "Retained MQTT topic with the PV production forecast snapshot (correction already applied). Without a current one PV is never credited."
         }
       }
     },
@@ -127,10 +123,8 @@
           "slot6_start_entity": "Slot 6 start",
           "slot6_capacity_entity": "Slot 6 capacity",
           "slot6_charge_enable_entity": "Slot 6 charge enable",
-          "pv_forecast_entity": "PV forecast",
           "house_load_profile_topic": "House load profile topic",
           "topology_epoch": "Topology epoch",
-          "pv_correction": "PV forecast correction",
           "reserve_pct": "Reserve (%)",
           "recovery_target_pct": "Recovery target (%)",
           "recovery_pv_wait_h": "Wait for PV (h)",
@@ -139,7 +133,7 @@
           "error_margin_morning_kwh": "Morning error margin (kWh DC)",
           "grid_charge_rate_dc_kw": "Grid charge rate (kW DC)",
           "budget_factor": "Budget backup factor",
-          "pv_forecast_max_age_h": "PV forecast max age (h)"
+          "pv_forecast_topic": "PV forecast topic"
         },
         "data_description": {
           "soc_entity": "Sensor with the battery state of charge (%).",
@@ -168,10 +162,8 @@
           "slot6_start_entity": "Start of time-of-use slot 6 (HHMM number).",
           "slot6_capacity_entity": "SOC floor and grid-charge target of slot 6 (%).",
           "slot6_charge_enable_entity": "Grid charging permission of slot 6.",
-          "pv_forecast_entity": "Sensor with issued_at (when the source produced the forecast) and profile_today_* / profile_tomorrow_* attributes (timestamps, W per 15 minutes). Without a usable one PV is never credited.",
           "house_load_profile_topic": "Retained MQTT topic with the house load profile snapshot. Without a usable profile PV is never credited and recovery is conservative.",
           "topology_epoch": "Profiles from another topology are rejected.",
-          "pv_correction": "Applied exactly once to the forecast (conservative P10).",
           "reserve_pct": "Recovery starts below this SOC.",
           "recovery_target_pct": "Grid charging only up to this SOC; at least reserve + 5.",
           "recovery_pv_wait_h": "Anchored deadline for PV to restore the reserve before grid charging.",
@@ -180,7 +172,7 @@
           "error_margin_morning_kwh": "Extra energy PV must add on top of the reserve before waiting is accepted.",
           "grid_charge_rate_dc_kw": "Assumed rate for sizing the off-peak window.",
           "budget_factor": "Grant closes once usage reaches budget × factor (backup to the SOC stop).",
-          "pv_forecast_max_age_h": "Older forecasts (by their issued_at) are not credited."
+          "pv_forecast_topic": "Retained MQTT topic with the PV production forecast snapshot (correction already applied). Without a current one PV is never credited."
         }
       }
     },

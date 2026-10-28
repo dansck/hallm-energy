@@ -32,9 +32,9 @@ from .config import EnergyConfig
 from .const import POLICY_VERSION
 from .device_io import DeviceIO, WriteResult
 from .executor import Gates, GrantExecutor, Snapshot
-from .inputs import build_inputs, offpeak_steps, pv_forecast, schedule_intervals
+from .inputs import build_inputs, offpeak_steps, schedule_intervals
 from .lifecycle import GrantTransitionError, provision, reconcile, reprovision, set_reconcile
-from .profile_receiver import ProfileReceiver
+from .profile_receiver import ProfileReceiver, PvForecastReceiver
 from .recovery_flow import RecoveryInputs, RecoveryOutcome, plan_recovery
 from .runtime import EnergyRuntime
 from .slot_plan import Op, Readback, current_slot, stop_ops
@@ -61,7 +61,6 @@ class TickStatus:
     writes: list[WriteResult] = field(default_factory=list)
     error: str | None = None
     recovery: RecoveryOutcome | None = None
-    pv_forecast: str | None = None  # why the PV forecast is not usable
 
 
 class EnergyController:
@@ -83,6 +82,7 @@ class EnergyController:
                                       budget_factor=config.budget_factor)
         self.status = TickStatus()
         self.profiles = ProfileReceiver()
+        self.pv_forecasts = PvForecastReceiver()
         self._lock = asyncio.Lock()
         self._was_live = False
         self._listeners: list[Callable[[], None]] = []
@@ -201,14 +201,13 @@ class EnergyController:
             entities = replace(self.config.slot_entities, slot_starts=snapshot.slot_starts)
             floor = readback.slot_capacity[current_slot(entities, snapshot.local_time)]
         now = snapshot.now
-        pv, status.pv_forecast = pv_forecast(self.hass, self.config, now)
         inputs = RecoveryInputs(
             now=now,
             soc_pct=snapshot.soc_pct if snapshot.telemetry_valid else None,
             current_floor_pct=floor,
             reading=snapshot.reading,
             reading_epoch=snapshot.reading_epoch,
-            pv_ac_kw=pv,
+            pv=self.pv_forecasts.forecast,
             profile=self.profiles.profile,
             nt_steps=offpeak_steps(schedule_intervals(self.hass, self.config, now), now),
             floors=readback.slot_capacity,

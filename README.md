@@ -30,9 +30,9 @@ In place:
 - recovery below the reserve: an episode starts when SOC drops below the
   reserve while the current slot floor is at least the reserve (a lower
   floor means the battery may deliberately go lower). Waiting for PV is
-  decided by a step simulation of the corrected PV forecast minus the house
-  load profile until a deadline anchored at entry; PV is credited only with a
-  current, complete, good-quality profile. Otherwise a grid grant to the
+  decided by a step simulation of the PV production forecast minus the house
+  load profile until a deadline anchored at entry; PV is credited only while
+  both snapshots (received over MQTT) are current, complete and good quality. Otherwise a grid grant to the
   recovery target is prepared over the next off-peak steps, one per episode;
   an expired window is extended with the same identity and budget;
 - after the grant, decided again every cycle: the floors stay at the target
@@ -62,11 +62,11 @@ entities (all of them can be changed later in the integration's options):
 | Grid charge master switch | switch |
 | Per slot (6): start (`HHMM`), capacity (%), charge enable | number, number, switch |
 | Shadow switch, feature switch | input booleans |
-| PV forecast (optional) | sensor with `issued_at` and `profile_today_*` / `profile_tomorrow_*` attributes; PV is credited only with a documented, recent issue time |
+| PV forecast topic (optional) | retained MQTT topic with the PV production snapshot: times of retrieval and (if the source states it) issue, validity, 15-minute kW with the correction already applied |
 | House load profile topic (optional) | retained MQTT topic |
 
 Recovery parameters (reserve, target, wait for PV, battery capacity and
-efficiency, PV correction, budget factor, …) have defaults and can be changed
+efficiency, budget factor, …) have defaults and can be changed
 in the options.
 
 **Writes happen only while the shadow switch is explicitly `off` and the

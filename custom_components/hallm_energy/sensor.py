@@ -113,7 +113,7 @@ class StatusSensor(SensorEntity):
                 else tick.recovery.reason,
                 "pv_not_credited_because": None if tick.recovery is None
                 else tick.recovery.pv_blocker,
-                "pv_forecast_problem": tick.pv_forecast,
+
             }
             profile = controller.profiles.profile
             attrs |= {
@@ -123,5 +123,12 @@ class StatusSensor(SensorEntity):
                 else profile.valid_until.isoformat(),
                 "profile_quality": None if profile is None else profile.quality.status,
                 "profile_error": controller.profiles.error,
+                "pv_forecast_retrieved_at": None if controller.pv_forecasts.forecast is None
+                else controller.pv_forecasts.forecast.retrieved_at.isoformat(),
+                "pv_forecast_valid_until": None if controller.pv_forecasts.forecast is None
+                else controller.pv_forecasts.forecast.valid_until.isoformat(),
+                "pv_forecast_quality": None if controller.pv_forecasts.forecast is None
+                else controller.pv_forecasts.forecast.quality,
+                "pv_forecast_error": controller.pv_forecasts.error,
             }
         return attrs
