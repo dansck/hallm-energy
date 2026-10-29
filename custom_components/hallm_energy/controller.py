@@ -66,6 +66,10 @@ class ProvisionError(Exception):
     pass
 
 
+GRID_OUTAGE_AFTER = timedelta(minutes=1)      # a flicker of the relay is not an outage
+INVERTER_GONE_AFTER = timedelta(minutes=5)    # the BMS/inverter channel is gone
+
+
 @dataclass
 class TickStatus:
     """Outcome of the last tick, for diagnostics only."""
@@ -143,40 +147,23 @@ class EnergyController:
         return status
 
     async def _observe_conditions(self, status: TickStatus) -> None:
-        """Alerts for the owner (`notify_service`); edge-triggered with a repeat."""
+        """Owner alerts (`notify_service`) for CRITICAL events only: the grid is gone, or the
+        inverter cannot be reached. Everything else is handled by the integration itself."""
         notifier = self.notifier
         if not notifier.enabled:
             return
-        state, error = self.runtime.state, status.error or ""
         now = status.at
-        checks = (
-            ("floor_lowering_stopped", error.startswith("floor lowering stopped"),
-             f"Floor writes were stopped before lowering a floor ({error.split(': ', 1)[-1]}); "
-             "the remaining floors were left as they were."),
-            ("floor_conflict", error.startswith("floor_conflict"),
-             "Slot floors were changed from outside the integration; it writes nothing "
-             "until they match again."),
-            ("tick_error", status.result == "error",
-             f"The control loop hit an error: {error}"),
-            ("persistence", self.runtime.blocked_reason is not None
-             or self.runtime.persistence_fault is not None
-             or error.startswith("state not persisted"),
-             "The local state could not be persisted; nothing is enabled until it is."),
-            ("reconcile_blocked", state is not None and state.reconcile_state.value == "blocked",
-             "The state does not match the device (reconcile blocked); "
-             "grid charging stays off until it is resolved."),
-            ("island", self._grid_present() is False,
-             "The grid is absent (or the grid relay is unavailable): no grid charging, no "
-             "morning exception."),
-            ("audit_full", self.outbox.full,
-             "The audit outbox is full: no new grid-charge grant can be recorded."),
-            ("external_stop", state is not None and state.manual_block is not None
-             and state.manual_block.reason == "external_stop",
-             "Grid charging was switched off from outside while a grant was running. The grant "
-             "was closed and grid charging is blocked until you turn off 'Block grid charging'."),
-        )
-        for kind, active, message in checks:
-            await notifier.async_observe(kind, active, message, now)
+        grid_gone = self._grid_present() is False
+        inverter_gone = ("soc_unavailable" in status.problems
+                         or self.io.read_slots(self.config.slot_entities).grid_charge is None)
+        await notifier.async_observe(
+            "grid_outage", grid_gone,
+            "Grid outage: the grid relay is off or unavailable. The integration does no grid "
+            "charging until the grid is back.", now, after=GRID_OUTAGE_AFTER)
+        await notifier.async_observe(
+            "inverter_unreachable", inverter_gone,
+            "The inverter cannot be reached: battery SOC or the charge settings are unavailable. "
+            "The integration changes nothing until they are back.", now, after=INVERTER_GONE_AFTER)
 
     async def async_deliver_audit(self) -> None:
         """One audit delivery round (own worker; takes the control lock only briefly)."""
@@ -219,10 +206,7 @@ class EnergyController:
                 self._was_live = False
 
     async def async_safety_stop(self) -> list[WriteResult]:
-        results = await self.executor.async_safety_stop()
-        await self.notifier.async_notify_once(
-            "safety_stop", "A safety stop was requested: grid charging was switched off.")
-        return results
+        return await self.executor.async_safety_stop()
 
     async def async_provision(self, *, again: bool = False) -> None:
         """Explicit: trust the configured charge counter from now on. `again` =

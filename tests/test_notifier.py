@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from unittest.mock import patch
 
@@ -13,14 +14,12 @@ from custom_components.hallm_energy import notifier as notifier_module
 from custom_components.hallm_energy.config import ConfigInvalidError, EnergyConfig
 from custom_components.hallm_energy.notifier import REPEAT_AFTER, Notifier
 from tests.test_controller import (
-    CAPS,
     GRID,
-    _charging_on,
     _controller,
 )
 from tests.test_executor import FakeInverter
 from tests.test_inputs import NOW, OPTIONS, set_telemetry
-from tests.test_lifecycle import activated, empty_state, set_reconcile
+from tests.test_lifecycle import empty_state
 
 T0 = datetime(2026, 10, 29, 12, 0, tzinfo=UTC)
 
@@ -106,15 +105,6 @@ async def test_a_stalled_service_is_cut_off_by_the_timeout(hass):
     assert "TimeoutError" in n.last_error
 
 
-async def test_an_event_is_rate_limited_per_kind(hass):
-    fake = FakeNotify(hass)
-    n = Notifier(hass, "notify.mobile")
-    assert await n.async_notify_once("stop", "stopped", T0) is True
-    assert await n.async_notify_once("stop", "stopped", T0 + timedelta(minutes=5)) is False
-    assert await n.async_notify_once("stop", "stopped", T0 + timedelta(minutes=11)) is True
-    assert len(fake.calls) == 2
-
-
 @pytest.mark.parametrize("value", ["mobile_app_phone", "notify.", "notify.Bad Name", "light.x", 5])
 def test_the_service_name_is_validated(value):
     options = {**OPTIONS, "notify_service": value}
@@ -129,49 +119,107 @@ def test_a_valid_service_name_is_accepted_and_optional():
     assert EnergyConfig.from_options(OPTIONS).notify_service is None
 
 
-# --- in the loop -------------------------------------------------------------------------------
+# --- delay: a flicker is not an event ---------------------------------------------------------
 
 
-async def test_an_outside_switch_off_of_a_running_grant_is_reported(storage_hass, fake_inverter):
+async def test_a_condition_must_last_for_its_delay_before_it_notifies(hass):
+    fake = FakeNotify(hass)
+    n = Notifier(hass, "notify.mobile")
+    delay = timedelta(minutes=1)
+    assert await n.async_observe("x", True, "boom", T0, after=delay) is False
+    at = lambda seconds: T0 + timedelta(seconds=seconds)  # noqa: E731
+    assert await n.async_observe("x", True, "boom", at(30), after=delay) is False
+    assert await n.async_observe("x", True, "boom", at(60), after=delay) is True
+    assert len(fake.calls) == 1
+
+
+async def test_a_flicker_restarts_the_delay(hass):
+    fake = FakeNotify(hass)
+    n = Notifier(hass, "notify.mobile")
+    delay = timedelta(minutes=1)
+    await n.async_observe("x", True, "boom", T0, after=delay)
+    await n.async_observe("x", False, "", T0 + timedelta(seconds=40), after=delay)   # it cleared
+    assert await n.async_observe("x", True, "boom", T0 + timedelta(seconds=50),
+                                 after=delay) is False                               # a new onset
+    assert await n.async_observe("x", True, "boom", T0 + timedelta(seconds=100),
+                                 after=delay) is False                               # only 50 s
+    assert await n.async_observe("x", True, "boom", T0 + timedelta(seconds=111),
+                                 after=delay) is True
+    assert len(fake.calls) == 1
+
+
+# --- in the loop: critical events only ----------------------------------------------------------
+
+
+def _controller_with_notifier(controller, hass):
+    controller.notifier = Notifier(hass, "notify.mobile")
+    return controller
+
+
+async def test_a_grid_outage_is_reported_after_a_minute_not_at_once(storage_hass, fake_inverter):
     fake = FakeNotify(storage_hass)
-    for cap in CAPS:
-        storage_hass.states.async_set(cap, "25")
-    _charging_on(storage_hass)
-    controller = await _controller(storage_hass, set_reconcile(activated(), "ready", None),
-                                   live=False)
-    controller.notifier = Notifier(storage_hass, "notify.mobile")
-    await controller.async_tick()
+    storage_hass.states.async_set("binary_sensor.grid_relay", "on")
+    controller = _controller_with_notifier(
+        await _controller(storage_hass, empty_state(), live=False), storage_hass)
+    controller.config = replace(controller.config, grid_relay_entity="binary_sensor.grid_relay")
+    await controller.async_tick(NOW)
     assert fake.calls == []
-    storage_hass.states.async_set(GRID, "off")        # a person switches grid charging off
-    await controller.async_tick()
-    assert any("switched off from outside" in c["message"] for c in fake.calls)
-    count = len(fake.calls)
-    await controller.async_tick()                      # still blocked: no second message
-    assert len(fake.calls) == count
+    storage_hass.states.async_set("binary_sensor.grid_relay", "off")
+    await controller.async_tick(NOW + timedelta(seconds=10))
+    assert fake.calls == []                                 # a flicker of the relay
+    await controller.async_tick(NOW + timedelta(seconds=75))
+    assert [("Grid outage" in c["message"]) for c in fake.calls] == [True]
+    await controller.async_tick(NOW + timedelta(seconds=105))
+    assert len(fake.calls) == 1                             # not again while it lasts
+    storage_hass.states.async_set("binary_sensor.grid_relay", "on")
+    await controller.async_tick(NOW + timedelta(seconds=135))
+    storage_hass.states.async_set("binary_sensor.grid_relay", "off")
+    await controller.async_tick(NOW + timedelta(seconds=200))
+    await controller.async_tick(NOW + timedelta(seconds=270))
+    assert len(fake.calls) == 2                             # a new outage notifies again
 
 
-async def test_a_loop_error_is_reported_and_does_not_break_the_loop(storage_hass, fake_inverter):
+async def test_an_unreachable_inverter_is_reported_after_five_minutes(storage_hass, fake_inverter):
     fake = FakeNotify(storage_hass)
-    controller = await _controller(storage_hass, empty_state())
-    controller.notifier = Notifier(storage_hass, "notify.mobile")
+    controller = _controller_with_notifier(
+        await _controller(storage_hass, empty_state(), live=False), storage_hass)
+    storage_hass.states.async_set("sensor.bms_soc", "unavailable")
+    await controller.async_tick(NOW)
+    await controller.async_tick(NOW + timedelta(minutes=4))
+    assert fake.calls == []
+    await controller.async_tick(NOW + timedelta(minutes=5, seconds=10))
+    assert [("inverter cannot be reached" in c["message"]) for c in fake.calls] == [True]
+
+
+async def test_unreachable_charge_settings_count_as_an_unreachable_inverter(
+        storage_hass, fake_inverter):
+    fake = FakeNotify(storage_hass)
+    controller = _controller_with_notifier(
+        await _controller(storage_hass, empty_state(), live=False), storage_hass)
+    storage_hass.states.async_set(GRID, "unavailable")
+    await controller.async_tick(NOW)
+    await controller.async_tick(NOW + timedelta(minutes=5, seconds=10))
+    assert any("inverter cannot be reached" in c["message"] for c in fake.calls)
+
+
+async def test_everything_else_does_not_notify(storage_hass, fake_inverter):
+    """A loop error, a manual switch-off, a blocked state … are handled by the integration."""
+    fake = FakeNotify(storage_hass)
+    controller = _controller_with_notifier(
+        await _controller(storage_hass, empty_state()), storage_hass)
     with patch.object(controller.executor, "async_cycle", side_effect=RuntimeError("boom")):
-        status = await controller.async_tick()
-    assert status.result == "error"
-    assert any("control loop hit an error" in c["message"] for c in fake.calls)
+        status = await controller.async_tick(NOW)
+        await controller.async_tick(NOW + timedelta(hours=1))
+    assert status.result == "error" and fake.calls == []
+    await controller.async_safety_stop()
+    assert fake.calls == []
 
 
 async def test_a_broken_notifier_never_breaks_a_tick(storage_hass, fake_inverter):
     FakeNotify(storage_hass, fail=True)
-    controller = await _controller(storage_hass, empty_state())
-    controller.notifier = Notifier(storage_hass, "notify.mobile")
-    with patch.object(controller.executor, "async_cycle", side_effect=RuntimeError("boom")):
-        status = await controller.async_tick()
-    assert status.result == "error"
-
-
-async def test_the_safety_stop_service_notifies(storage_hass, fake_inverter):
-    fake = FakeNotify(storage_hass)
-    controller = await _controller(storage_hass, set_reconcile(activated(), "ready", None))
-    controller.notifier = Notifier(storage_hass, "notify.mobile")
-    await controller.async_safety_stop()
-    assert any("safety stop" in c["message"] for c in fake.calls)
+    controller = _controller_with_notifier(
+        await _controller(storage_hass, empty_state(), live=False), storage_hass)
+    storage_hass.states.async_set("sensor.bms_soc", "unavailable")
+    await controller.async_tick(NOW)
+    status = await controller.async_tick(NOW + timedelta(minutes=6))
+    assert status.result != "error"
