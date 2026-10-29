@@ -42,6 +42,7 @@ from .state_schema import (
     EpisodeLedgerEntry,
     GrantUsage,
     GrantWindow,
+    ManualBlock,
     OperationStatus,
     PendingAuditEvent,
     PendingStep,
@@ -665,11 +666,29 @@ def reconcile(
         if not on:
             # Charging was switched off from outside: that is a manual intervention and it
             # is honoured — the grant ends (closed in the ledger, audited) instead of
-            # being resumed. Whatever follows is decided afresh by the recovery logic.
+            # being resumed, and grid charging stays blocked until a person lifts it.
             working = confirm_closed(_start_closing(working, "external_stop", now), now=now)
+            working = set_manual_block(working, on=True, reason="external_stop", now=now)
     elif on:  # prepared/paused but physically charging
         return finish(working, "required", "unexpected_charge", True)
     return finish(working, "ready", None, False)
+
+
+def set_manual_block(state: StoreState, *, on: bool, reason: str, now: datetime
+                     ) -> StoreState:
+    """Block or unblock grid charging for good (until lifted by a person). Blocking also
+    ends a grant in flight: it is closed through the normal stop path, never resumed."""
+    if on == (state.manual_block is not None):
+        return state
+    kind = "manual_block_set" if on else "manual_block_cleared"
+    audit = _audit(state, f"{kind}:{state.state_revision}",
+                   {"kind": kind, "reason": reason}, now)
+    changed = _bump(state, manual_block=ManualBlock(now, reason) if on else None,
+                    pending_audit=audit)
+    active = changed.active_grant
+    if on and active is not None and active.status != "closing":
+        changed = _start_closing(changed, "manual_block", now)
+    return changed
 
 
 def _start_closing(state: StoreState, reason: str | None, now: datetime) -> StoreState:

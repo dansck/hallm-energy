@@ -49,8 +49,10 @@ In place:
   already restored floor back; a floor changed from outside blocks all floor
   writes (diagnosed, not overwritten).
 - a manual intervention is honoured: if grid charging is switched off from outside while a
-  grant is running, the grant is closed (`external_stop`) and not resumed, and no new grant
-  starts until the end of the local day;
+  grant is running, the grant is closed (`external_stop`) and not resumed, and grid charging
+  stays blocked — the `Block grid charging` switch turns on and no grant is prepared or
+  started until a person turns it off. The switch can also be turned on by hand; that ends
+  a grant in flight the same way (state is persisted, both changes are audited);
 
 - the floor table: the discharge floor of every slot is worked out from the
   tariff schedule (not from the slot index) — high tariff: the reserve (20 %) — raised to reserve + margin (25 %) only while

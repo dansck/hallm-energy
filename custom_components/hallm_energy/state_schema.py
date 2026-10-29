@@ -542,6 +542,15 @@ def _parse_floors(raw: Any, where: str) -> tuple[float, ...] | None:
 
 
 @dataclass(frozen=True)
+class ManualBlock:
+    """Grid charging is blocked until a person lifts it: no grant is prepared, started or
+    kept. Set by the user or automatically when charging was switched off from outside."""
+
+    since: datetime
+    reason: str
+
+
+@dataclass(frozen=True)
 class StoreState:
     state_revision: int
     policy_version: str
@@ -557,6 +566,7 @@ class StoreState:
     pending_audit: tuple[PendingAuditEvent, ...]
     recovery: RecoveryEpisode | None = None
     morning: MorningState = MorningState()
+    manual_block: ManualBlock | None = None
 
     def __post_init__(self) -> None:
         self._validate_ledger()
@@ -680,6 +690,8 @@ class StoreState:
             "recovery": None if self.recovery is None else self.recovery.to_dict(),
             "morning": {"phase": self.morning.phase,
                         "floor_state_pct": self.morning.floor_state_pct},
+            "manual_block": None if self.manual_block is None else {
+                "since": _epoch(self.manual_block.since), "reason": self.manual_block.reason},
         }
 
 
@@ -718,6 +730,13 @@ def parse_store_state(raw: Any) -> StoreState:
             floor_state_pct=None if morning_raw.get("floor_state_pct") is None
             else _require_number(morning_raw.get("floor_state_pct"), "morning.floor_state_pct"),
         )
+    block_raw = raw.get("manual_block")  # arrived later: a missing key = not blocked
+    manual_block = None
+    if block_raw is not None:
+        block_raw = _require_dict(block_raw, "manual_block")
+        manual_block = ManualBlock(
+            since=_parse_epoch(block_raw.get("since"), "manual_block.since"),
+            reason=_require_str(block_raw.get("reason"), "manual_block.reason"))
     return StoreState(
         state_revision=_require_int(raw.get("state_revision"), "state_revision"),
         policy_version=_require_str(raw.get("policy_version"), "policy_version"),
@@ -745,4 +764,5 @@ def parse_store_state(raw: Any) -> StoreState:
         if recovery_raw is None
         else RecoveryEpisode.from_dict(recovery_raw, "recovery"),
         morning=morning,
+        manual_block=manual_block,
     )

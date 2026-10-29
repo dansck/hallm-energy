@@ -176,6 +176,7 @@ async def test_externally_switched_off_grant_is_closed_not_resumed(storage_hass,
     assert runtime_state.active_grant is None
     closed = [e for e in runtime_state.episode_ledger if e.state == "closed"]
     assert closed and closed[-1].close_reason == "external_stop"
+    assert runtime_state.manual_block is not None  # stays blocked until a person lifts it
     assert inverter.calls == []
 
 
@@ -194,6 +195,24 @@ async def test_externally_switched_off_grant_stays_off_in_live_mode(storage_hass
     assert controller.runtime.state.active_grant is None or \
         controller.runtime.state.active_grant.status != "active"
     assert inverter.value(GRID) != "on"
+
+
+async def test_block_switch_ends_a_running_grant_and_can_be_lifted(storage_hass, inverter):
+    for cap in CAPS:
+        storage_hass.states.async_set(cap, "25")
+    _charging_on(storage_hass)
+    controller = await _controller(storage_hass, set_reconcile(activated(), "ready", None),
+                                   live=True)
+    await controller.async_set_manual_block(True)
+    assert controller.runtime.state.manual_block.reason == "user"
+    await controller.async_tick()
+    assert controller.runtime.state.active_grant is None  # closed through the stop path
+    assert inverter.value(GRID) != "on"
+    await controller.async_tick()
+    assert controller.runtime.state.active_grant is None
+
+    await controller.async_set_manual_block(False)
+    assert controller.runtime.state.manual_block is None
 
 
 async def test_tick_survives_an_internal_error(storage_hass, inverter):

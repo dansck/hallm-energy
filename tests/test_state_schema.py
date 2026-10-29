@@ -98,7 +98,8 @@ def test_valid_snapshot_round_trips_through_json():
     expected = _raw()
     expected["pending_audit"] = [{**e, "created_at": None} for e in expected["pending_audit"]]
     assert serialized == {**expected, "recovery": None,
-                          "morning": {"phase": "none", "floor_state_pct": None}}
+                          "morning": {"phase": "none", "floor_state_pct": None},
+                          "manual_block": None}
 
 
 def test_real_payload_exceeds_input_text_limit_and_still_round_trips():

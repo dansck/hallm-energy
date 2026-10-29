@@ -639,29 +639,20 @@ def test_outlook_is_unknown_when_the_profile_misses_part_of_the_window():
     assert label == "unknown" and balance is None and why == "profile_not_covering_window"
 
 
-# --- manual stop ---------------------------------------------------------------------------
+# --- manual block --------------------------------------------------------------------------
 
 
-def _stopped_by_hand(closed_at):
-    """No recovery episode, one grant closed from outside at `closed_at`."""
-    from custom_components.hallm_energy.state_schema import EpisodeLedgerEntry  # noqa: F401
-    base = empty_state()
-    entry = replace(
-        _closed()[1].episode_ledger[-1], state="closed", close_reason="external_stop",
-        close_at=closed_at, final_used_dc_kwh=0.5)
-    return replace(base, episode_ledger=(entry,))
-
-
-def test_no_new_grant_for_the_rest_of_the_day_after_a_manual_stop():
-    day_start = NOW - timedelta(hours=3)
-    state = _stopped_by_hand(NOW - timedelta(hours=1))
-    new, outcome = _plan(state, replace(_inputs(pv=lambda _t: 0.0), today_start=day_start))
-    assert outcome.action == "none" and outcome.reason == "manual_stop_today"
+def test_no_grant_while_grid_charging_is_blocked():
+    from custom_components.hallm_energy.lifecycle import set_manual_block
+    blocked = set_manual_block(empty_state(), on=True, reason="user", now=NOW)
+    new, outcome = _plan(blocked, _inputs(pv=lambda _t: 0.0))
+    assert outcome.action == "none" and outcome.reason == "manual_block"
     assert new.active_grant is None and new.recovery is None
 
 
-def test_a_manual_stop_of_a_previous_day_does_not_block():
-    state = _stopped_by_hand(NOW - timedelta(hours=30))
-    new, outcome = _plan(state, replace(_inputs(pv=lambda _t: 0.0),
-                                        today_start=NOW - timedelta(hours=3)))
-    assert outcome.reason != "manual_stop_today" and new.recovery is not None
+def test_lifting_the_block_lets_recovery_decide_again():
+    from custom_components.hallm_energy.lifecycle import set_manual_block
+    blocked = set_manual_block(empty_state(), on=True, reason="user", now=NOW)
+    lifted = set_manual_block(blocked, on=False, reason="user", now=NOW)
+    new, outcome = _plan(lifted, _inputs(pv=lambda _t: 0.0))
+    assert outcome.reason != "manual_block" and new.recovery is not None

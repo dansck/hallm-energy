@@ -75,6 +75,10 @@ class StatusSensor(SensorEntity):
                 "reconcile": state.reconcile_state.value,
                 "reconcile_reason": state.reconcile_state.reason_code,
                 "pending_audit": len(state.pending_audit),
+                "manual_block": None if state.manual_block is None
+                else state.manual_block.reason,
+                "manual_block_since": None if state.manual_block is None
+                else state.manual_block.since.isoformat(),
             }
             if state.counter_state is not None:
                 attrs["counter_last_trusted_kwh"] = state.counter_state.last_trusted_raw_dc_kwh

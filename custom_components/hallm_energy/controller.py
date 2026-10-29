@@ -41,7 +41,14 @@ from .inputs import (
     schedule_intervals,
     schedule_nt,
 )
-from .lifecycle import GrantTransitionError, provision, reconcile, reprovision, set_reconcile
+from .lifecycle import (
+    GrantTransitionError,
+    provision,
+    reconcile,
+    reprovision,
+    set_manual_block,
+    set_reconcile,
+)
 from .morning_flow import MorningInputs, MorningOutcome, plan_morning
 from .profile_receiver import ProfileReceiver, PvForecastReceiver
 from .recovery_flow import RecoveryInputs, RecoveryOutcome, outlook_status, plan_recovery
@@ -142,6 +149,21 @@ class EnergyController:
             count = await self.outbox.async_discard()
         self._notify()
         return count
+
+    async def async_set_manual_block(self, on: bool, reason: str = "user") -> None:
+        """The block switch: no grid charging until it is lifted. Serialized with the loop;
+        a grant in flight is closed by the next cycle through the normal stop path."""
+        async with self._lock:
+            state = self.runtime.state
+            if state is None or self.runtime.blocked_reason is not None:
+                return
+            new = set_manual_block(state, on=on, reason=reason, now=dt_util.utcnow())
+            if new != state:
+                try:
+                    await self.runtime.async_commit(new)
+                except StoreNotDurableError as exc:
+                    _LOGGER.warning("manual block not persisted: %s", exc)
+        self._notify()
 
     async def async_handle_ack(self, payload: str | bytes) -> None:
         """Acknowledgement from the audit receiver — serialized with the control loop."""
@@ -347,7 +369,6 @@ class EnergyController:
             profile=self.profiles.profile,
             nt_steps=offpeak_steps(schedule_intervals(self.hass, self.config, now), now),
             floors=readback.slot_capacity,
-            today_start=dt_util.as_utc(dt_util.start_of_local_day(dt_util.as_local(now).date())),
             outlook=_local_outlook(now, params.outlook_days),
             live=status.live,
             managed_floors=self._managed_floors(snapshot, status),

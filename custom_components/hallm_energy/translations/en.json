@@ -221,6 +221,11 @@
       "status": {
         "name": "Status"
       }
+    },
+    "switch": {
+      "grid_charging_block": {
+        "name": "Block grid charging"
+      }
     }
   },
   "services": {

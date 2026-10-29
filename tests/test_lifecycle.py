@@ -721,3 +721,31 @@ def test_reprovision_refused_with_pending_step():
     assert proposed.pending_step is not None
     with pytest.raises(GrantTransitionError):
         _reprovision(proposed)
+
+
+def test_manual_block_is_idempotent_audited_and_liftable():
+    from custom_components.hallm_energy.lifecycle import set_manual_block
+    state = empty_state()
+    blocked = set_manual_block(state, on=True, reason="user", now=T0)
+    assert blocked.manual_block is not None and blocked.manual_block.reason == "user"
+    assert set_manual_block(blocked, on=True, reason="user", now=T0) is blocked
+    lifted = set_manual_block(blocked, on=False, reason="user", now=T0)
+    assert lifted.manual_block is None
+    assert [e.payload["kind"] for e in lifted.pending_audit] == [
+        "manual_block_set", "manual_block_cleared"]
+    from custom_components.hallm_energy.state_schema import parse_store_state
+    import json
+    assert parse_store_state(json.loads(json.dumps(blocked.to_dict()))) == blocked
+
+
+def test_blocking_ends_a_grant_in_flight_through_the_stop_path():
+    from custom_components.hallm_energy.lifecycle import set_manual_block
+    blocked = set_manual_block(activated(), on=True, reason="user", now=T0)
+    assert blocked.active_grant.status == "closing"
+    assert blocked.active_grant.reason_code == "manual_block"
+
+
+def test_external_stop_also_sets_the_block():
+    result = rec(on_startup(activated()), on=False)
+    assert result.state.manual_block is not None
+    assert result.state.manual_block.reason == "external_stop"
