@@ -76,7 +76,13 @@ class Gates:
         return None if state is None else state.state
 
     def live(self) -> bool:
+        """Grid-charge grants: the shadow switch reads `off` AND the feature switch `on`."""
         return self._state(self.shadow_entity) == "off" and self._state(self.feature_entity) == "on"
+
+    def floors_live(self) -> bool:
+        """Slot floors (when floor management is configured): only the shadow switch matters,
+        so the floors can be taken over without ever allowing grid charging."""
+        return self._state(self.shadow_entity) == "off"
 
 
 @dataclass
@@ -84,6 +90,7 @@ class CycleReport:
     charge_enable: bool = False
     reason: str | None = None
     live: bool = False
+    floors_live: bool = False
     intents: list[Op] = field(default_factory=list)
     writes: list[WriteResult] = field(default_factory=list)
     step_outcome: str | None = None
@@ -145,7 +152,7 @@ class GrantExecutor:
         on); `lowering_ok` = the plan was built from trustworthy inputs, so a floor
         may also be LOWERED (raising is always allowed)."""
         async with self._cycle_lock:
-            report = CycleReport(live=self.gates.live())
+            report = CycleReport(live=self.gates.live(), floors_live=self.gates.floors_live())
             state = self.runtime.state
             if state is None or self.runtime.blocked_reason is not None:
                 report.error = f"runtime blocked: {self.runtime.blocked_reason}"
@@ -255,7 +262,7 @@ class GrantExecutor:
         return results
 
     async def _run_floors(self, ops: list[Op], rev: int, lowering: frozenset[str],
-                          report: CycleReport) -> list[WriteResult]:
+                          report: CycleReport, gate: Callable[[], bool]) -> list[WriteResult]:
         """Floor writes in sequence. A RAISE is always safe and goes ahead; before EACH
         LOWERING the conditions it was planned under are looked at again, under the write
         lock, so a safety stop, closed gates, a grant, charging or inputs that stopped
@@ -264,7 +271,7 @@ class GrantExecutor:
         for op in ops:
             async with self._write_lock:
                 if op.entity_id in lowering:
-                    reason = self._lowering_blocker(rev)
+                    reason = self._lowering_blocker(rev, gate)
                     if reason is not None:
                         report.error = f"floor lowering stopped: {reason}"
                         break
@@ -274,16 +281,22 @@ class GrantExecutor:
                 break
         return results
 
-    def _lowering_blocker(self, rev: int) -> str | None:
+    def _grant_owns_floors(self) -> bool:
+        """A grant that is real owns the floors; one that is only PREPARED while grants are not
+        live (shadow) changes nothing physical and leaves the floors to the table."""
+        active = None if self.runtime.state is None else self.runtime.state.active_grant
+        return active is not None and (active.status != "prepared" or self.gates.live())
+
+    def _lowering_blocker(self, rev: int, gate: Callable[[], bool]) -> str | None:
         """Why the next floor LOWERING must not be written; `None` = it may."""
         state = self.runtime.state
         if self.safety_revision != rev:
             return "safety_stop"
-        if not self.gates.live():
+        if not gate():
             return "not_live"
         if state is None or not self.runtime.may_enable:
             return "runtime_not_ready"
-        if state.active_grant is not None or state.pending_step is not None:
+        if self._grant_owns_floors() or state.pending_step is not None:
             return "grant_or_step_in_play"
         if self.io.read_slots(self.entities).charging_enabled is not False:
             return "charging_not_verified_off"
@@ -325,7 +338,7 @@ class GrantExecutor:
         state = self.runtime.state
         if (
             state is None
-            or state.active_grant is not None
+            or self._grant_owns_floors()
             or state.pending_step is not None
             or not self.runtime.may_enable
         ):
@@ -350,10 +363,10 @@ class GrantExecutor:
         ops = raises + (lowers if lowering_ok else [])
         if not ops:
             return
-        if report.live:
+        if report.floors_live:
             report.writes += await self._run_floors(
                 ops, self.safety_revision,
-                frozenset(op.entity_id for op in lowers), report)
+                frozenset(op.entity_id for op in lowers), report, self.gates.floors_live)
         else:
             report.intents += ops
 
@@ -385,7 +398,8 @@ class GrantExecutor:
             if readback.slot_capacity[i] is not None
             and value < readback.slot_capacity[i] - CAPACITY_TOLERANCE_PCT)
         if report.live:
-            report.writes += await self._run_floors(ops, self.safety_revision, lowering, report)
+            report.writes += await self._run_floors(
+                ops, self.safety_revision, lowering, report, self.gates.live)
         else:
             report.intents += ops
 

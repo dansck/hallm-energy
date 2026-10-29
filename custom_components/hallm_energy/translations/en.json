@@ -99,7 +99,7 @@
           "morning_dip_floor_pct": "Lowest floor inside the morning window; at most reserve - 5.",
           "morning_dip_h": "How long before the PV start the dip floor may apply.",
           "refill_margin_min": "Safety margin before the end of useful PV.",
-          "manage_floors": "Activation gate: in live mode the integration keeps every slot floor at the planned value (raising always, lowering only with trustworthy inputs). Off by default; the planned floors are only reported.",
+          "manage_floors": "Activation gate for the slot floors: when on AND the shadow switch is off, the integration keeps every slot floor at the planned value (raising always, lowering only with trustworthy inputs, re-checked before each lowering). It does not need the feature switch, so floors can be taken over without allowing grid charging. Off by default; the planned floors are only reported.",
           "audit_topic": "MQTT topic for the audit events of grants and state changes. A receiver must acknowledge them on the same topic with /ack appended; events stay in a durable outbox until then. Without a topic delivery is paused and the events are kept."
         }
       }
@@ -211,7 +211,7 @@
           "morning_dip_floor_pct": "Lowest floor inside the morning window; at most reserve - 5.",
           "morning_dip_h": "How long before the PV start the dip floor may apply.",
           "refill_margin_min": "Safety margin before the end of useful PV.",
-          "manage_floors": "Activation gate: in live mode the integration keeps every slot floor at the planned value (raising always, lowering only with trustworthy inputs). Off by default; the planned floors are only reported.",
+          "manage_floors": "Activation gate for the slot floors: when on AND the shadow switch is off, the integration keeps every slot floor at the planned value (raising always, lowering only with trustworthy inputs, re-checked before each lowering). It does not need the feature switch, so floors can be taken over without allowing grid charging. Off by default; the planned floors are only reported.",
           "audit_topic": "MQTT topic for the audit events of grants and state changes. A receiver must acknowledge them on the same topic with /ack appended; events stay in a durable outbox until then. Without a topic delivery is paused and the events are kept."
         }
       }

@@ -332,6 +332,7 @@ class EnergyController:
             "reasons": list(plan.reasons),
             "outlook": self._outlook,
             "managed": self.config.manage_floors,
+            "live": self.config.manage_floors and self.gates.floors_live(),
             "diff": [i + 1 for i, (a, p) in enumerate(zip(actual, plan.floors, strict=True))
                      if a is None or abs(a - p) > 0.5],
         }

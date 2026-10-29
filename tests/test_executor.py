@@ -628,3 +628,72 @@ async def test_a_safety_stop_between_two_restore_writes_ends_that_series_too(
     report = await executor.async_cycle(_snapshot(soc=25.0))
     assert _written(inverter) == [(CAPS[0], 20.0)]          # the rest of the restore is held back
     assert "floor lowering stopped: safety_stop" in report.error
+
+
+# --- floors have their own gate: only the shadow switch -------------------------------------------
+
+
+async def test_floors_go_live_with_the_shadow_switch_alone_and_grants_stay_off(
+        storage_hass, inverter):
+    _set_caps(storage_hass, [10, 10, 10, 10, 10, 20])
+    gates = _gates(storage_hass, shadow="off", feature="off")
+    assert gates.floors_live() is True and gates.live() is False
+    executor = await _idle_executor(storage_hass, gates=gates)
+    report = await executor.async_cycle(_snapshot(soc=50.0), floor_plan=_plan([25] * 6),
+                                        lowering_ok=True)
+    assert [float(inverter.value(c)) for c in CAPS] == [25.0] * 6
+    assert report.floors_live and not report.live
+    assert inverter.value(GRID) == "off"            # and grid charging was never touched
+
+
+async def test_floors_stay_intents_while_the_shadow_switch_is_on(storage_hass, inverter):
+    _set_caps(storage_hass, [10] * 6)
+    gates = _gates(storage_hass, shadow="on", feature="on")
+    assert gates.floors_live() is False
+    executor = await _idle_executor(storage_hass, gates=gates)
+    report = await executor.async_cycle(_snapshot(soc=50.0), floor_plan=_plan([25] * 6),
+                                        lowering_ok=True)
+    assert inverter.calls == [] and len(report.intents) == 6
+
+
+async def test_an_unconfigured_shadow_switch_never_means_live(storage_hass, inverter):
+    gates = Gates(storage_hass, shadow_entity=None, feature_entity=None)
+    assert gates.floors_live() is False and gates.live() is False
+
+
+async def test_a_grant_that_is_only_prepared_in_shadow_does_not_freeze_the_floors(
+        storage_hass, inverter):
+    _set_caps(storage_hass, [10] * 6)
+    gates = _gates(storage_hass, shadow="off", feature="off")      # grants not live
+    executor = await _executor(storage_hass, gates=gates)          # state: a prepared grant
+    assert executor.runtime.state.active_grant.status == "prepared"
+    # SOC below the target: the grant stays prepared (it does not close as "reached")
+    await executor.async_cycle(_snapshot(soc=19.0), floor_plan=_plan([25] * 6), lowering_ok=True)
+    assert executor.runtime.state.active_grant is not None
+    assert executor.runtime.state.active_grant.status == "prepared"
+    assert [float(inverter.value(c)) for c in CAPS] == [25.0] * 6
+
+
+async def test_a_prepared_grant_owns_the_floors_once_grants_are_live(storage_hass, inverter):
+    _set_caps(storage_hass, [10] * 6)
+    executor = await _executor(storage_hass, gates=_gates(storage_hass, shadow="off",
+                                                          feature="on"))
+    assert executor._grant_owns_floors() is True
+
+
+async def test_closing_the_shadow_gate_between_two_lowerings_ends_the_series_but_the_feature_switch_does_not(  # noqa: E501
+        storage_hass, inverter):
+    gates = _gates(storage_hass, shadow="off", feature="off")
+    _set_caps(storage_hass, [30, 30, 30, 30, 25, 25])
+    executor = await _idle_executor(storage_hass, gates=gates)
+    inverter.after[(CAPS[0], 20.0)] = lambda: storage_hass.states.async_set(FEATURE, "on")
+    await executor.async_cycle(_snapshot(soc=50.0), floor_plan=_plan([20] * 6), lowering_ok=True)
+    assert len(_written(inverter)) == 6              # the feature switch is not a floor gate
+
+    _set_caps(storage_hass, [30, 30, 30, 30, 25, 25])
+    inverter.calls.clear()
+    inverter.after[(CAPS[0], 20.0)] = lambda: storage_hass.states.async_set(SHADOW, "on")
+    report = await executor.async_cycle(_snapshot(soc=50.0), floor_plan=_plan([20] * 6),
+                                        lowering_ok=True)
+    assert _written(inverter) == [(CAPS[0], 20.0)]
+    assert "floor lowering stopped: not_live" in report.error

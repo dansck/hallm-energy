@@ -60,9 +60,11 @@ In place:
   off-peak during the day: that plus what the remaining high-tariff blocks need
   beyond the PV forecast, off-peak after the last high tariff: the reserve —
   with the morning exception and grants overlaid. It is always REPORTED next to
-  the actual floors in the status sensor (`floors`). Behind a second activation
-  gate (`Manage slot floors`, off by default) and only in live mode the
-  integration keeps the floors at the plan: raising always, lowering only
+  the actual floors in the status sensor (`floors`). Behind its own activation
+  gate (`Manage slot floors`, off by default) and with the shadow switch off the
+  integration keeps the floors at the plan — the feature switch is not needed, so the floors can
+  be taken over without ever allowing grid charging (grants keep their own gate: shadow off AND
+  feature on): raising always, lowering only
   while the schedule and telemetry are trustworthy — re-checked before EACH lowering write
   (safety stop, closed gates, grant or pending step, charging not verified off, telemetry and
   schedule looked at again), so a series of writes ends the moment a condition is lost —
