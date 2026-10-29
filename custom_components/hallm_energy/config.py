@@ -7,6 +7,7 @@ configured — the integration then only keeps its state and does nothing.
 
 from __future__ import annotations
 
+import re
 from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
@@ -32,6 +33,7 @@ CONF_PV_TOPIC = "pv_forecast_topic"
 CONF_PROFILE_TOPIC = "house_load_profile_topic"
 CONF_GRID_RELAY = "grid_relay_entity"
 CONF_AUDIT_TOPIC = "audit_topic"
+CONF_NOTIFY_SERVICE = "notify_service"
 CONF_ENABLE_MORNING_DIP = "enable_morning_dip"
 CONF_MANAGE_FLOORS = "manage_floors"
 CONF_OUTLOOK_MARGIN = "outlook_margin_pct"
@@ -107,6 +109,7 @@ class EnergyConfig:
     pv_topic: str | None = None
     audit_topic: str | None = None
     grid_relay_entity: str | None = None
+    notify_service: str | None = None
     enable_morning_dip: bool = False
     manage_floors: bool = False
     floor: FloorParams | None = None
@@ -177,6 +180,11 @@ class EnergyConfig:
         if not isinstance(manage, bool):
             raise ConfigInvalidError("manage_floors: expected a boolean")
         grid_relay = options.get(CONF_GRID_RELAY) or None
+        notify_service = options.get(CONF_NOTIFY_SERVICE) or None
+        if notify_service is not None and (
+                not isinstance(notify_service, str)
+                or not re.fullmatch(r"notify\.[a-z0-9_]+", notify_service)):
+            raise ConfigInvalidError("notify_service: expected a notify.<service> name")
 
         return EnergyConfig(
             soc_entity=options[CONF_SOC],
@@ -193,6 +201,7 @@ class EnergyConfig:
             pv_topic=pv_topic,
             audit_topic=audit_topic,
             grid_relay_entity=grid_relay,
+            notify_service=notify_service,
             enable_morning_dip=enable_dip,
             manage_floors=manage,
             floor=FloorParams(

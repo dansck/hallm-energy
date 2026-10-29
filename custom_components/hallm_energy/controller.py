@@ -50,6 +50,7 @@ from .lifecycle import (
     set_reconcile,
 )
 from .morning_flow import MorningInputs, MorningOutcome, plan_morning
+from .notifier import Notifier
 from .profile_receiver import ProfileReceiver, PvForecastReceiver
 from .recovery_flow import RecoveryInputs, RecoveryOutcome, outlook_status, plan_recovery
 from .runtime import EnergyRuntime
@@ -104,6 +105,7 @@ class EnergyController:
         self.profiles = ProfileReceiver()
         self.pv_forecasts = PvForecastReceiver()
         self.outbox = AuditOutbox(runtime, config.audit_topic, _mqtt_publisher(hass))
+        self.notifier = Notifier(hass, config.notify_service)
         runtime.mode_provider = lambda: "live" if self.gates.live() else "shadow"
         self._lock = asyncio.Lock()
         self._outlook: dict | None = None
@@ -137,7 +139,44 @@ class EnergyController:
                 status.result, status.error = "error", repr(exc)
             self.status = status
             self._notify()
-            return status
+        await self._observe_conditions(status)  # outside the control lock: never delays a cycle
+        return status
+
+    async def _observe_conditions(self, status: TickStatus) -> None:
+        """Alerts for the owner (`notify_service`); edge-triggered with a repeat."""
+        notifier = self.notifier
+        if not notifier.enabled:
+            return
+        state, error = self.runtime.state, status.error or ""
+        now = status.at
+        checks = (
+            ("floor_lowering_stopped", error.startswith("floor lowering stopped"),
+             f"Floor writes were stopped before lowering a floor ({error.split(': ', 1)[-1]}); "
+             "the remaining floors were left as they were."),
+            ("floor_conflict", error.startswith("floor_conflict"),
+             "Slot floors were changed from outside the integration; it writes nothing "
+             "until they match again."),
+            ("tick_error", status.result == "error",
+             f"The control loop hit an error: {error}"),
+            ("persistence", self.runtime.blocked_reason is not None
+             or self.runtime.persistence_fault is not None
+             or error.startswith("state not persisted"),
+             "The local state could not be persisted; nothing is enabled until it is."),
+            ("reconcile_blocked", state is not None and state.reconcile_state.value == "blocked",
+             "The state does not match the device (reconcile blocked); "
+             "grid charging stays off until it is resolved."),
+            ("island", self._grid_present() is False,
+             "The grid is absent (or the grid relay is unavailable): no grid charging, no "
+             "morning exception."),
+            ("audit_full", self.outbox.full,
+             "The audit outbox is full: no new grid-charge grant can be recorded."),
+            ("external_stop", state is not None and state.manual_block is not None
+             and state.manual_block.reason == "external_stop",
+             "Grid charging was switched off from outside while a grant was running. The grant "
+             "was closed and grid charging is blocked until you turn off 'Block grid charging'."),
+        )
+        for kind, active, message in checks:
+            await notifier.async_observe(kind, active, message, now)
 
     async def async_deliver_audit(self) -> None:
         """One audit delivery round (own worker; takes the control lock only briefly)."""
@@ -180,7 +219,10 @@ class EnergyController:
                 self._was_live = False
 
     async def async_safety_stop(self) -> list[WriteResult]:
-        return await self.executor.async_safety_stop()
+        results = await self.executor.async_safety_stop()
+        await self.notifier.async_notify_once(
+            "safety_stop", "A safety stop was requested: grid charging was switched off.")
+        return results
 
     async def async_provision(self, *, again: bool = False) -> None:
         """Explicit: trust the configured charge counter from now on. `again` =
