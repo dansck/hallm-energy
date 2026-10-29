@@ -663,7 +663,10 @@ def reconcile(
         working = confirm_closed(working, now=now)
     elif active.status == "active":
         if not on:
-            working = _paused(working, now, "readback_off")
+            # Charging was switched off from outside: that is a manual intervention and it
+            # is honoured — the grant ends (closed in the ledger, audited) instead of
+            # being resumed. Whatever follows is decided afresh by the recovery logic.
+            working = confirm_closed(_start_closing(working, "external_stop", now), now=now)
     elif on:  # prepared/paused but physically charging
         return finish(working, "required", "unexpected_charge", True)
     return finish(working, "ready", None, False)

@@ -7,7 +7,8 @@ Each tick:
 3. after a persistence fault, retries a verified write first (reconcile is
    then required again) — nothing enables in between;
 4. an `active` grant whose charging was switched off from outside is sent
-   back through reconcile (it becomes `paused`, with an audit event);
+   back through reconcile, which honours the intervention: the grant is closed
+   (`external_stop`, audited) and not resumed;
 5. while reconcile is not `ready`, reconciles against the read-only snapshot
    (stopping first if required, persisting second);
 6. otherwise plans recovery (`recovery_flow`: episode, decision, grant —
@@ -346,6 +347,7 @@ class EnergyController:
             profile=self.profiles.profile,
             nt_steps=offpeak_steps(schedule_intervals(self.hass, self.config, now), now),
             floors=readback.slot_capacity,
+            today_start=dt_util.as_utc(dt_util.start_of_local_day(dt_util.as_local(now).date())),
             outlook=_local_outlook(now, params.outlook_days),
             live=status.live,
             managed_floors=self._managed_floors(snapshot, status),

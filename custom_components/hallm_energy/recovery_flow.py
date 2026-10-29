@@ -67,6 +67,7 @@ class RecoveryInputs:
     profile: HouseLoadProfile | None
     nt_steps: Sequence[datetime]  # future off-peak step starts per the schedule
     floors: tuple[float | None, ...] = ()  # current slot floors (readback)
+    today_start: datetime | None = None  # start of the local day (UTC); None = not known
     # outlook window: start of tomorrow (local) to the end of the last day looked at, UTC
     outlook: tuple[datetime, datetime] | None = None
     live: bool = True  # shadow: floors were never raised, so they are not compared
@@ -105,6 +106,20 @@ def _pv_kw(forecast: PvForecast) -> Callable[[datetime], float]:
         return 0.0 if kw is None else kw  # outside the forecast nothing is credited
 
     return pv
+
+
+def _manual_stop_today(state: StoreState, inputs: RecoveryInputs) -> bool:
+    """A grant was closed by a switch-off from outside during the current local day (or
+    the day is not known while one was closed within a day)."""
+    stops = [e.close_at for e in state.episode_ledger
+             if e.state == "closed" and e.close_reason == "external_stop"
+             and e.close_at is not None]
+    if not stops:
+        return False
+    last = max(stops)
+    if inputs.today_start is None:
+        return inputs.now - last < timedelta(hours=24)
+    return last >= inputs.today_start
 
 
 def _surplus(inputs: RecoveryInputs, required_end: datetime,
@@ -169,6 +184,9 @@ def plan_recovery(
     if recovery is None and state.morning.phase != "none":
         # D-50: below the reserve inside the morning exception is not a recovery trigger
         return state, RecoveryOutcome("none", f"morning_{state.morning.phase}")
+    if recovery is None and _manual_stop_today(state, inputs):
+        # a person switched grid charging off: no new grant until the day is over
+        return state, RecoveryOutcome("none", "manual_stop_today")
     if recovery is None:
         floor = inputs.current_floor_pct
         # transitional rule while floors are not managed: a floor below the reserve is

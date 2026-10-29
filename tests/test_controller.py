@@ -161,7 +161,7 @@ async def test_release_on_unload_only_after_live(storage_hass, inverter):
     assert inverter.value(GRID) == "off"
 
 
-async def test_externally_switched_off_grant_goes_through_reconcile(storage_hass, inverter):
+async def test_externally_switched_off_grant_is_closed_not_resumed(storage_hass, inverter):
     for cap in CAPS:
         storage_hass.states.async_set(cap, "25")
     _charging_on(storage_hass)
@@ -171,19 +171,17 @@ async def test_externally_switched_off_grant_goes_through_reconcile(storage_hass
     assert controller.runtime.state.active_grant.status == "active"
 
     storage_hass.states.async_set(GRID, "off")  # outside intervention
-    status = await controller.async_tick()
-    grant = controller.runtime.state.active_grant
-    assert grant.status == "paused"
-    assert grant.reason_code == "readback_off"
-    assert status.result == "cycle"
-    assert status.intents  # shadow: preparation reported, nothing written
+    await controller.async_tick()
+    runtime_state = controller.runtime.state
+    assert runtime_state.active_grant is None
+    closed = [e for e in runtime_state.episode_ledger if e.state == "closed"]
+    assert closed and closed[-1].close_reason == "external_stop"
     assert inverter.calls == []
 
 
-async def test_externally_switched_off_grant_is_resumed_in_live_mode(storage_hass, inverter):
-    """Current policy: an outside switch-off pauses the grant; the next
-    eligible cycle prepares and enables again (the feature switch is the way
-    to stop it)."""
+async def test_externally_switched_off_grant_stays_off_in_live_mode(storage_hass, inverter):
+    """A manual switch-off is honoured: the grant is closed and charging is never
+    enabled again by that grant."""
     for cap in CAPS:
         storage_hass.states.async_set(cap, "25")
     _charging_on(storage_hass)
@@ -191,10 +189,11 @@ async def test_externally_switched_off_grant_is_resumed_in_live_mode(storage_has
                                    live=True)
     storage_hass.states.async_set(GRID, "off")
     status = await controller.async_tick()
-    assert status.result == "cycle"
-    assert controller.runtime.state.active_grant.status == "active"
-    assert inverter.value(GRID) == "on"
-    assert inverter.calls[0] == (GRID, False)  # prepared (all permissions off) first
+    assert controller.runtime.state.active_grant is None
+    await controller.async_tick()
+    assert controller.runtime.state.active_grant is None or \
+        controller.runtime.state.active_grant.status != "active"
+    assert inverter.value(GRID) != "on"
 
 
 async def test_tick_survives_an_internal_error(storage_hass, inverter):

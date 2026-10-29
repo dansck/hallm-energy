@@ -539,10 +539,14 @@ def test_reconcile_counts_charging_during_downtime_through_checkpoint():
     )
 
 
-def test_reconcile_pauses_active_grant_when_readback_off():
-    result = rec(on_startup(activated()), on=False)
-    assert result.state.active_grant.status == "paused"
-    assert result.state.active_grant.reason_code == "readback_off"
+def test_reconcile_closes_active_grant_switched_off_from_outside():
+    started = on_startup(activated())
+    result = rec(started, on=False)
+    assert result.state.active_grant is None
+    episode = [e for e in result.state.episode_ledger if e.state == "closed"][-1]
+    assert episode.close_reason == "external_stop"
+    kinds = {e.payload["kind"] for e in result.state.pending_audit}
+    assert {"grant_closing", "grant_closed"} <= kinds
     assert result.state.reconcile_state.value == "ready"
 
 

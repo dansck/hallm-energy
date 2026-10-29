@@ -629,3 +629,39 @@ def test_outlook_is_unknown_when_a_snapshot_does_not_reach_the_window_end():
     label, _, why = outlook_status(_profile(hours=48), _forecast(_sunny, hours=48), NOW,
                                    window, 1)
     assert label == "unknown" and why
+
+
+def test_outlook_is_unknown_when_the_profile_misses_part_of_the_window():
+    from custom_components.hallm_energy.recovery_flow import outlook_status
+    window = (NOW - timedelta(hours=2), NOW + timedelta(hours=30))  # starts before the profile
+    label, balance, why = outlook_status(_profile(hours=48), _forecast(_sunny, hours=48), NOW,
+                                         window, 1)
+    assert label == "unknown" and balance is None and why == "profile_not_covering_window"
+
+
+# --- manual stop ---------------------------------------------------------------------------
+
+
+def _stopped_by_hand(closed_at):
+    """No recovery episode, one grant closed from outside at `closed_at`."""
+    from custom_components.hallm_energy.state_schema import EpisodeLedgerEntry  # noqa: F401
+    base = empty_state()
+    entry = replace(
+        _closed()[1].episode_ledger[-1], state="closed", close_reason="external_stop",
+        close_at=closed_at, final_used_dc_kwh=0.5)
+    return replace(base, episode_ledger=(entry,))
+
+
+def test_no_new_grant_for_the_rest_of_the_day_after_a_manual_stop():
+    day_start = NOW - timedelta(hours=3)
+    state = _stopped_by_hand(NOW - timedelta(hours=1))
+    new, outcome = _plan(state, replace(_inputs(pv=lambda _t: 0.0), today_start=day_start))
+    assert outcome.action == "none" and outcome.reason == "manual_stop_today"
+    assert new.active_grant is None and new.recovery is None
+
+
+def test_a_manual_stop_of_a_previous_day_does_not_block():
+    state = _stopped_by_hand(NOW - timedelta(hours=30))
+    new, outcome = _plan(state, replace(_inputs(pv=lambda _t: 0.0),
+                                        today_start=NOW - timedelta(hours=3)))
+    assert outcome.reason != "manual_stop_today" and new.recovery is not None

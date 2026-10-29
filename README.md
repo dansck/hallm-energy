@@ -48,6 +48,9 @@ In place:
   charging verifiably off, and the episode ends. Losing the reason raises an
   already restored floor back; a floor changed from outside blocks all floor
   writes (diagnosed, not overwritten).
+- a manual intervention is honoured: if grid charging is switched off from outside while a
+  grant is running, the grant is closed (`external_stop`) and not resumed, and no new grant
+  starts until the end of the local day;
 
 - the floor table: the discharge floor of every slot is worked out from the
   tariff schedule (not from the slot index) — high tariff: the reserve (20 %) — raised to reserve + margin (25 %) only while
