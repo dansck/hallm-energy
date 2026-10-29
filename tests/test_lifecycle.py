@@ -733,8 +733,9 @@ def test_manual_block_is_idempotent_audited_and_liftable():
     assert lifted.manual_block is None
     assert [e.payload["kind"] for e in lifted.pending_audit] == [
         "manual_block_set", "manual_block_cleared"]
-    from custom_components.hallm_energy.state_schema import parse_store_state
     import json
+
+    from custom_components.hallm_energy.state_schema import parse_store_state
     assert parse_store_state(json.loads(json.dumps(blocked.to_dict()))) == blocked
 
 

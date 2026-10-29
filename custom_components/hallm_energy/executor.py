@@ -9,7 +9,10 @@ its writes and aborts — then writes `grid_charge` off and every slot
 Writes happen only when the gates are explicitly live (shadow switched off
 AND the feature switched on, both readable). Otherwise every intended write
 is only reported, nothing is written, and an enabling proposal is not
-persisted (no pending step that nobody will execute). The only exception is
+persisted (no pending step that nobody will execute).
+A series of floor writes re-checks the safety revision, the gates, the runtime, grant /
+pending step, a fresh charging readback and the trust in the inputs before EACH lowering
+(raises are always safe and are not held back). The only exception is
 `async_release`: leaving live mode turns charging off once.
 """
 
@@ -96,6 +99,7 @@ class GrantExecutor:
         gates: Gates,
         *,
         recheck: Callable[[], bool] | None = None,
+        lowering_recheck: Callable[[], bool] | None = None,
         budget_factor: float = DEFAULT_GRANT_BUDGET_FACTOR,
     ) -> None:
         self.runtime = runtime
@@ -103,6 +107,9 @@ class GrantExecutor:
         self.entities = entities
         self.gates = gates
         self.recheck = recheck or (lambda: True)
+        # fresh look at the inputs a floor lowering rests on (telemetry, tariff schedule);
+        # without it nothing beyond the executor's own state is re-checked
+        self.lowering_recheck = lowering_recheck or (lambda: True)
         self.budget_factor = budget_factor
         self.safety_revision = 0
         self._cycle_lock = asyncio.Lock()
@@ -247,6 +254,43 @@ class GrantExecutor:
                 break
         return results
 
+    async def _run_floors(self, ops: list[Op], rev: int, lowering: frozenset[str],
+                          report: CycleReport) -> list[WriteResult]:
+        """Floor writes in sequence. A RAISE is always safe and goes ahead; before EACH
+        LOWERING the conditions it was planned under are looked at again, under the write
+        lock, so a safety stop, closed gates, a grant, charging or inputs that stopped
+        being trustworthy between two writes end the series right there."""
+        results: list[WriteResult] = []
+        for op in ops:
+            async with self._write_lock:
+                if op.entity_id in lowering:
+                    reason = self._lowering_blocker(rev)
+                    if reason is not None:
+                        report.error = f"floor lowering stopped: {reason}"
+                        break
+                result = await self.io.write(op)
+            results.append(result)
+            if result.outcome != "confirmed":
+                break
+        return results
+
+    def _lowering_blocker(self, rev: int) -> str | None:
+        """Why the next floor LOWERING must not be written; `None` = it may."""
+        state = self.runtime.state
+        if self.safety_revision != rev:
+            return "safety_stop"
+        if not self.gates.live():
+            return "not_live"
+        if state is None or not self.runtime.may_enable:
+            return "runtime_not_ready"
+        if state.active_grant is not None or state.pending_step is not None:
+            return "grant_or_step_in_play"
+        if self.io.read_slots(self.entities).charging_enabled is not False:
+            return "charging_not_verified_off"
+        if not self.lowering_recheck():
+            return "inputs_not_trusted"
+        return None
+
     def _may_continue(self, rev: int, grant_id: str | None) -> bool:
         state = self.runtime.state
         active = None if state is None else state.active_grant
@@ -307,7 +351,9 @@ class GrantExecutor:
         if not ops:
             return
         if report.live:
-            report.writes += await self._run(ops, self.safety_revision, enabling=False)
+            report.writes += await self._run_floors(
+                ops, self.safety_revision,
+                frozenset(op.entity_id for op in lowers), report)
         else:
             report.intents += ops
 
@@ -334,8 +380,12 @@ class GrantExecutor:
                 report.error = "floor_conflict: floors changed from outside, nothing written"
             return
         ops = [Op(self.entities.slot_capacity[i], float(value)) for i, value in planned]
+        lowering = frozenset(
+            self.entities.slot_capacity[i] for i, value in planned
+            if readback.slot_capacity[i] is not None
+            and value < readback.slot_capacity[i] - CAPACITY_TOLERANCE_PCT)
         if report.live:
-            report.writes += await self._run(ops, self.safety_revision, enabling=False)
+            report.writes += await self._run_floors(ops, self.safety_revision, lowering, report)
         else:
             report.intents += ops
 

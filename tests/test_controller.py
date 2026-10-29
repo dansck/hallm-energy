@@ -189,7 +189,7 @@ async def test_externally_switched_off_grant_stays_off_in_live_mode(storage_hass
     controller = await _controller(storage_hass, set_reconcile(activated(), "ready", None),
                                    live=True)
     storage_hass.states.async_set(GRID, "off")
-    status = await controller.async_tick()
+    await controller.async_tick()
     assert controller.runtime.state.active_grant is None
     await controller.async_tick()
     assert controller.runtime.state.active_grant is None or \
@@ -379,7 +379,8 @@ async def test_managed_floors_raise_to_the_table_in_live_mode(storage_hass, inve
     status = await controller.async_tick()
     assert status.floors["managed"] is True
     assert [float(inverter.value(c)) for c in CAPS] == [25, 25, 25, 25, 25, 25]
-    assert {w.op.entity_id for w in status.writes} == set(CAPS)  # no outlook data: all slots reserve + margin
+    # no outlook data: every slot gets reserve + margin
+    assert {w.op.entity_id for w in status.writes} == set(CAPS)
 
 
 async def test_managed_floors_are_lowered_only_with_a_known_schedule(storage_hass, inverter):
@@ -468,3 +469,22 @@ async def test_the_evening_of_28_10_a_grant_born_without_data_is_cancelled_by_th
     assert [e.event_id for e in state.pending_audit if e.payload["kind"] == "grant_cancelled"] \
         == [f"{grant_id}:cancelled"]
     assert inverter.calls == []  # shadow: nothing was ever written
+
+
+# --- inputs looked at again before every floor lowering ----------------------------------------
+
+
+async def test_lowering_inputs_need_valid_telemetry_and_a_known_schedule(storage_hass, inverter):
+    from tests.test_inputs import set_telemetry
+
+    await storage_hass.config.async_set_time_zone("Europe/Prague")
+    controller = await _controller(storage_hass, empty_state(), live=True)
+    set_telemetry(storage_hass, schedule=_d57d_schedule(), soc="50.0")
+    assert controller._lowering_inputs_trusted() is True
+
+    storage_hass.states.async_set("sensor.bms_soc", "unavailable")      # telemetry lost
+    assert controller._lowering_inputs_trusted() is False
+
+    set_telemetry(storage_hass, schedule=_d57d_schedule(), soc="50.0")
+    storage_hass.states.async_remove("sensor.hdo_schedule")             # schedule gone
+    assert controller._lowering_inputs_trusted() is False

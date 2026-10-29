@@ -63,7 +63,10 @@ In place:
   the actual floors in the status sensor (`floors`). Behind a second activation
   gate (`Manage slot floors`, off by default) and only in live mode the
   integration keeps the floors at the plan: raising always, lowering only
-  while the schedule and telemetry are trustworthy, never below the reserve
+  while the schedule and telemetry are trustworthy — re-checked before EACH lowering write
+  (safety stop, closed gates, grant or pending step, charging not verified off, telemetry and
+  schedule looked at again), so a series of writes ends the moment a condition is lost —
+  never below the reserve
   without the morning exception, never while a grant, a pending step or
   charging is in play, every write confirmed by readback. With the gate on, the
   plan (not the floors found earlier) is the authority after a grant, and a

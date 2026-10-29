@@ -536,3 +536,95 @@ async def test_a_wait_pv_episode_without_a_grant_never_touches_the_floors(storag
     executor = await _executor(storage_hass, state=set_reconcile(waiting, "ready", None))
     await executor.async_cycle(_snapshot(soc=13.0))
     assert [c for c in inverter.calls if c[0] in CAPS] == []
+
+
+# --- floor lowering is re-checked before every single write ---------------------------------------
+
+
+async def _lowering_series(hass, inverter, *, hook, recheck=None):
+    """Floors [30, 30, 30, 30, 25, 25] -> plan 20 everywhere: four lowerings in a row; `hook`
+    runs right after the FIRST lowering was written (the second must then not go out)."""
+    _set_caps(hass, [30, 30, 30, 30, 25, 25])
+    executor = await _idle_executor(hass)
+    if recheck is not None:
+        executor.lowering_recheck = recheck
+    inverter.after[(CAPS[0], 20.0)] = lambda: hook(executor)
+    report = await executor.async_cycle(_snapshot(soc=50.0), floor_plan=_plan([20] * 6),
+                                        lowering_ok=True)
+    return executor, report
+
+
+def _written(inverter):
+    return [(c, v) for c, v in inverter.calls if c in CAPS]
+
+
+async def test_a_safety_stop_between_two_lowerings_ends_the_series(storage_hass, inverter):
+    _, report = await _lowering_series(
+        storage_hass, inverter, hook=lambda ex: setattr(ex, "safety_revision",
+                                                        ex.safety_revision + 1))
+    assert _written(inverter) == [(CAPS[0], 20.0)]
+    assert "floor lowering stopped: safety_stop" in report.error
+
+
+async def test_closing_the_gates_between_two_lowerings_ends_the_series(storage_hass, inverter):
+    _, report = await _lowering_series(
+        storage_hass, inverter, hook=lambda ex: storage_hass.states.async_set(SHADOW, "on"))
+    assert _written(inverter) == [(CAPS[0], 20.0)]
+    assert "floor lowering stopped: not_live" in report.error
+
+
+async def test_charging_turning_on_between_two_lowerings_ends_the_series(storage_hass, inverter):
+    _, report = await _lowering_series(
+        storage_hass, inverter, hook=lambda ex: (storage_hass.states.async_set(GRID, "on"),
+                                                 storage_hass.states.async_set(CES[5], "on")))
+    assert _written(inverter) == [(CAPS[0], 20.0)]
+    assert "floor lowering stopped: charging_not_verified_off" in report.error
+
+
+async def test_inputs_that_stop_being_trusted_end_the_series(storage_hass, inverter):
+    trusted = {"ok": True}
+    _, report = await _lowering_series(
+        storage_hass, inverter, hook=lambda ex: trusted.update(ok=False),
+        recheck=lambda: trusted["ok"])
+    assert _written(inverter) == [(CAPS[0], 20.0)]
+    assert "floor lowering stopped: inputs_not_trusted" in report.error
+
+
+async def test_a_grant_appearing_between_two_lowerings_ends_the_series(storage_hass, inverter):
+    def hook(executor):  # the grant arrives in the state, as a reconcile / restart would bring it
+        executor.runtime.state = set_reconcile(prepared(), "ready", None)
+
+    _, report = await _lowering_series(storage_hass, inverter, hook=hook)
+    assert _written(inverter) == [(CAPS[0], 20.0)]
+    assert "floor lowering stopped: grant_or_step_in_play" in report.error
+
+
+async def test_raises_are_not_held_back_by_the_lowering_checks(storage_hass, inverter):
+    _set_caps(storage_hass, [10, 10, 30, 30, 25, 25])
+    executor = await _idle_executor(storage_hass)
+    executor.lowering_recheck = lambda: False          # nothing may be lowered ...
+    report = await executor.async_cycle(
+        _snapshot(soc=50.0), floor_plan=_plan([25, 25, 20, 20, 25, 25]), lowering_ok=True)
+    assert _written(inverter) == [(CAPS[0], 25.0), (CAPS[1], 25.0)]  # ... raises still go out
+    assert "floor lowering stopped: inputs_not_trusted" in report.error
+
+
+async def test_the_runtime_losing_readiness_between_two_lowerings_ends_the_series(
+        storage_hass, inverter):
+    def hook(executor):   # e.g. a persistence fault or a reconcile that is required again
+        executor.runtime.state = set_reconcile(executor.runtime.state, "required", "readback_off")
+
+    _, report = await _lowering_series(storage_hass, inverter, hook=hook)
+    assert _written(inverter) == [(CAPS[0], 20.0)]
+    assert "floor lowering stopped: runtime_not_ready" in report.error
+
+
+async def test_a_safety_stop_between_two_restore_writes_ends_that_series_too(
+        storage_hass, inverter):
+    _raise_all(storage_hass)
+    executor = await _executor(storage_hass, state=_after_grant_state())
+    inverter.after[(CAPS[0], 20.0)] = lambda: setattr(
+        executor, "safety_revision", executor.safety_revision + 1)
+    report = await executor.async_cycle(_snapshot(soc=25.0))
+    assert _written(inverter) == [(CAPS[0], 20.0)]          # the rest of the restore is held back
+    assert "floor lowering stopped: safety_stop" in report.error

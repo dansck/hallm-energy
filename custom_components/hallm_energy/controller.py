@@ -98,6 +98,7 @@ class EnergyController:
         self.gates = Gates(hass, shadow_entity=config.shadow_entity,
                            feature_entity=config.feature_entity)
         self.executor = GrantExecutor(runtime, self.io, config.slot_entities, self.gates,
+                                      lowering_recheck=self._lowering_inputs_trusted,
                                       budget_factor=config.budget_factor)
         self.status = TickStatus()
         self.profiles = ProfileReceiver()
@@ -253,6 +254,14 @@ class EnergyController:
         status.intents += report.intents
         status.writes += report.writes
         status.error = report.error
+
+    def _lowering_inputs_trusted(self) -> bool:
+        """Looked at again before every floor lowering: the telemetry is valid right now and
+        the tariff schedule is known (the conditions `lowering_ok` was granted under)."""
+        now = dt_util.utcnow()
+        snapshot = build_inputs(self.hass, self.config, now).snapshot
+        return (snapshot.telemetry_valid and snapshot.soc_pct is not None
+                and schedule_intervals(self.hass, self.config, now) is not None)
 
     async def _plan_morning(self, snapshot: Snapshot, status: TickStatus) -> bool:
         params = self.config.morning
