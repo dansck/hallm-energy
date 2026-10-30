@@ -30,7 +30,6 @@ CALENDAR_REFRESH = timedelta(minutes=5)
 CALENDAR_HORIZON = timedelta(days=14)
 CALENDAR_TIMEOUT_S = 10.0
 SOC_UNUSABLE_AFTER = timedelta(hours=24)
-CHARGE_EFFICIENCY = 0.9  # estimate, AC at the wallbox to DC in the battery
 ASSIST_WINDOW_H = 3.0
 
 
@@ -156,8 +155,8 @@ class EvShadow:
         if request is not None:
             energy, hours, feasible = deadline_feasibility(
                 now=now, deadline_at=request.deadline_at, soc_pct=soc,
-                target_pct=target, battery_kwh=cfg.ev_battery_kwh,
-                charge_efficiency=CHARGE_EFFICIENCY, max_power_kw=cfg.ev_max_power_kw)
+                target_pct=target, ac_kwh_per_pct=cfg.ev_ac_kwh_per_pct,
+                max_power_kw=cfg.ev_max_power_kw)
             report["request"] = {
                 "title": request.title, "deadline_at": request.deadline_at.isoformat(),
                 "target_pct": target, "energy_needed_kwh": round(energy, 1),

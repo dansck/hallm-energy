@@ -111,14 +111,15 @@ def deadline_feasibility(
     deadline_at: datetime,
     soc_pct: float,
     target_pct: float,
-    battery_kwh: float,
-    charge_efficiency: float,
+    ac_kwh_per_pct: float,
     max_power_kw: float,
 ) -> tuple[float, float, bool]:
     """`(energy_needed_ac_kwh, hours_needed_at_max_power, feasible)` for reaching the target at
-    the deadline when charging at full power from now on. Zero when the target is reached."""
+    the deadline when charging at full power from now on. `ac_kwh_per_pct` is the energy the
+    wallbox delivers per percent of battery level (measured, so it already includes the charging
+    losses and the real usable capacity). Zero when the target is reached."""
     missing_pct = max(0.0, target_pct - soc_pct)
-    energy_kwh = missing_pct / 100.0 * battery_kwh / charge_efficiency
+    energy_kwh = missing_pct * ac_kwh_per_pct
     hours_needed = energy_kwh / max_power_kw if max_power_kw > 0 else float("inf")
     hours_left = max(0.0, (deadline_at - now).total_seconds() / 3600.0)
     return energy_kwh, hours_needed, hours_needed <= hours_left

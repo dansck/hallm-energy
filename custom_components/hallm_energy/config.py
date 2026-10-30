@@ -41,7 +41,7 @@ CONF_EV_SOC = "ev_soc_entity"
 CONF_EV_CONNECTED = "ev_connected_entity"
 CONF_EV_TRACKER = "ev_tracker_entity"
 CONF_EV_CALENDAR = "ev_calendar_entity"
-CONF_EV_BATTERY = "ev_battery_kwh"
+CONF_EV_AC_KWH_PER_PCT = "ev_ac_kwh_per_pct"
 CONF_EV_TRIPS = "ev_daily_trip_pct"
 CONF_EV_MOBILITY_MIN = "ev_mobility_min_pct"
 CONF_EV_DEFAULT_TARGET = "ev_default_target_pct"
@@ -82,7 +82,7 @@ NUMBER_OPTIONS: dict[str, tuple[float, float, float]] = {
     CONF_DIP_H: (3.0, 0.0, 4.0),
     CONF_REFILL_MARGIN: (30.0, 0.0, 120.0),
     CONF_GUARD_EV_CAP: (16.0, 6.0, 32.0),
-    CONF_EV_BATTERY: (77.0, 20.0, 150.0),
+    CONF_EV_AC_KWH_PER_PCT: (0.78, 0.3, 1.5),
     CONF_EV_TRIPS: (10.0, 0.0, 50.0),
     CONF_EV_MOBILITY_MIN: (30.0, 10.0, 60.0),
     CONF_EV_DEFAULT_TARGET: (80.0, 50.0, 100.0),
@@ -154,7 +154,7 @@ class EnergyConfig:
     ev_connected_entity: str | None = None
     ev_tracker_entity: str | None = None
     ev_calendar_entity: str | None = None
-    ev_battery_kwh: float = NUMBER_OPTIONS[CONF_EV_BATTERY][0]
+    ev_ac_kwh_per_pct: float = NUMBER_OPTIONS[CONF_EV_AC_KWH_PER_PCT][0]
     ev_daily_trip_pct: float = NUMBER_OPTIONS[CONF_EV_TRIPS][0]
     ev_mobility_min_pct: float = NUMBER_OPTIONS[CONF_EV_MOBILITY_MIN][0]
     ev_default_target_pct: float = NUMBER_OPTIONS[CONF_EV_DEFAULT_TARGET][0]
@@ -277,7 +277,7 @@ class EnergyConfig:
             ev_connected_entity=ev[CONF_EV_CONNECTED],
             ev_tracker_entity=ev[CONF_EV_TRACKER],
             ev_calendar_entity=ev[CONF_EV_CALENDAR],
-            ev_battery_kwh=numbers[CONF_EV_BATTERY],
+            ev_ac_kwh_per_pct=numbers[CONF_EV_AC_KWH_PER_PCT],
             ev_daily_trip_pct=numbers[CONF_EV_TRIPS],
             ev_mobility_min_pct=numbers[CONF_EV_MOBILITY_MIN],
             ev_default_target_pct=numbers[CONF_EV_DEFAULT_TARGET],
