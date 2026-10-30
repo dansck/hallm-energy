@@ -42,6 +42,7 @@ CONF_EV_CONNECTED = "ev_connected_entity"
 CONF_EV_SOC_UPDATED = "ev_soc_updated_entity"
 CONF_EV_TRACKER = "ev_tracker_entity"
 CONF_EV_CALENDAR = "ev_calendar_entity"
+CONF_EV_ALLOW_VT = "ev_deadline_allow_peak"
 CONF_EV_PAUSE = "ev_wallbox_pause_entity"
 CONF_EV_INTENSITY = "ev_wallbox_intensity_entity"
 CONF_EV_MAX_INTENSITY = "ev_wallbox_max_intensity_entity"
@@ -160,6 +161,7 @@ class EnergyConfig:
     ev_soc_updated_entity: str | None = None
     ev_tracker_entity: str | None = None
     ev_calendar_entity: str | None = None
+    ev_deadline_allow_peak: bool = True
     ev_wallbox_pause_entity: str | None = None
     ev_wallbox_intensity_entity: str | None = None
     ev_wallbox_max_intensity_entity: str | None = None
@@ -260,6 +262,9 @@ class EnergyConfig:
             raise ConfigInvalidError("EV: the SOC sensor and the connected sensor go together")
         if numbers[CONF_EV_MOBILITY_MIN] >= numbers[CONF_EV_DEFAULT_TARGET]:
             raise ConfigInvalidError("EV: mobility minimum must be below the default target")
+        allow_peak = options.get(CONF_EV_ALLOW_VT, True)
+        if not isinstance(allow_peak, bool):
+            raise ConfigInvalidError("ev_deadline_allow_peak: expected a boolean")
         notify_service = options.get(CONF_NOTIFY_SERVICE) or None
         if notify_service is not None and (
                 not isinstance(notify_service, str)
@@ -291,6 +296,7 @@ class EnergyConfig:
             ev_soc_updated_entity=ev[CONF_EV_SOC_UPDATED],
             ev_tracker_entity=ev[CONF_EV_TRACKER],
             ev_calendar_entity=ev[CONF_EV_CALENDAR],
+            ev_deadline_allow_peak=allow_peak,
             ev_wallbox_pause_entity=ev[CONF_EV_PAUSE],
             ev_wallbox_intensity_entity=ev[CONF_EV_INTENSITY],
             ev_wallbox_max_intensity_entity=ev[CONF_EV_MAX_INTENSITY],

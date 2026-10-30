@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import math
+from collections.abc import Callable
 from datetime import date, datetime, timedelta
 from typing import Any
 
@@ -24,7 +25,13 @@ from .energy_core.ev import (
     mobility_floor_needed,
     next_request,
 )
-from .energy_core.ev_plan import MIN_POWER_KW, WallboxFacts, plan_ev_intents
+from .energy_core.ev_plan import (
+    MIN_POWER_KW,
+    TariffFacts,
+    WallboxFacts,
+    grid_charge_gate,
+    plan_ev_intents,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -114,7 +121,9 @@ class EvShadow:
             dynamic_on=flag(cfg.ev_wallbox_dynamic_entity))
 
     def evaluate(self, now: datetime, guard: dict | None, grid_present: bool | None,
-                 force: bool = False) -> dict[str, Any] | None:
+                 force: bool = False,
+                 tariff: Callable[[datetime | None], TariffFacts] | None = None
+                 ) -> dict[str, Any] | None:
         """`None` when the EV report is not configured."""
         cfg = self.config
         if not self.enabled:
@@ -184,13 +193,42 @@ class EvShadow:
         if decision.state == "force_charge":
             cap = guard["ev_current_cap_a"] if guard else cfg.guard_ev_cap_a
             report |= {"tariff_ignored": True, "power": "max", "max_current_a": cap}
+        hours_needed = None
+        if request is not None:
+            energy, hours, feasible = deadline_feasibility(
+                now=now, deadline_at=request.deadline_at, soc_pct=soc,
+                target_pct=target, ac_kwh_per_pct=cfg.ev_ac_kwh_per_pct,
+                max_power_kw=cfg.ev_max_power_kw)
+            hours_needed = hours
+            report["request"] = {
+                "title": request.title, "deadline_at": request.deadline_at.isoformat(),
+                "target_pct": target, "energy_needed_kwh": round(energy, 1),
+                "hours_needed_at_max": round(hours, 1), "feasible": feasible}
+        facts_tariff = None
+        if tariff is not None:
+            facts_tariff = tariff(None if request is None else request.deadline_at)
+            report["tariff"] = {
+                "nt_now": facts_tariff.nt_now,
+                "nt_hours_to_deadline": None if facts_tariff.nt_hours_to_deadline is None
+                else round(facts_tariff.nt_hours_to_deadline, 1),
+                "schedule_covers_deadline": facts_tariff.covered}
+        if decision.state in ("mobility_floor", "deadline"):
+            allowed, why = grid_charge_gate(
+                decision.state, tariff=facts_tariff, hours_needed=hours_needed,
+                allow_peak_for_deadline=cfg.ev_deadline_allow_peak)
+            report["grid_charge"] = {"allowed": allowed, "reason": why}
+            if allowed:
+                # charging from the grid must not drain the house battery
+                report["deye_mode_required"] = "to load"
         if cfg.ev_wallbox_pause_entity:
             facts = self._wallbox_facts()
             if guard is not None:
                 cap_a = guard["ev_current_cap_a"]
             else:  # a configured guard that has not reported leaves the ceiling unknown
                 cap_a = None if cfg.phase_current_entities else cfg.guard_ev_cap_a
-            intents, withheld = plan_ev_intents(decision.state, wallbox=facts, cap_a=cap_a)
+            intents, withheld = plan_ev_intents(
+                decision.state, wallbox=facts, cap_a=cap_a, tariff=facts_tariff,
+                hours_needed=hours_needed, allow_peak_for_deadline=cfg.ev_deadline_allow_peak)
             report["wallbox"] = {
                 "paused": facts.paused, "intensity_a": facts.intensity_a,
                 "max_intensity_a": facts.max_intensity_a, "dynamic_on": facts.dynamic_on,
@@ -199,13 +237,4 @@ class EvShadow:
                 {"target": i.target, "value": i.value, "reason": i.reason, "phase": i.phase}
                 for i in intents]
             report["intents_withheld"] = withheld
-        if request is not None:
-            energy, hours, feasible = deadline_feasibility(
-                now=now, deadline_at=request.deadline_at, soc_pct=soc,
-                target_pct=target, ac_kwh_per_pct=cfg.ev_ac_kwh_per_pct,
-                max_power_kw=cfg.ev_max_power_kw)
-            report["request"] = {
-                "title": request.title, "deadline_at": request.deadline_at.isoformat(),
-                "target_pct": target, "energy_needed_kwh": round(energy, 1),
-                "hours_needed_at_max": round(hours, 1), "feasible": feasible}
         return report

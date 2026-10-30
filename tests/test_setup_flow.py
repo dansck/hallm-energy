@@ -42,7 +42,7 @@ async def test_user_flow_creates_entry_with_mapping_in_options(storage_hass, inv
     defaults = {key: spec[0] for key, spec in NUMBER_OPTIONS.items()}
     # both activation gates (morning exception, floor management) are off by default
     assert dict(entry.options) == {**OPTIONS, **defaults, "enable_morning_dip": False,
-                                   "manage_floors": False}
+                                   "manage_floors": False, "ev_deadline_allow_peak": True}
     await _settle(hass)
     assert hass.states.get(STATUS).state == "not_provisioned"
     assert hass.states.get(STATUS).attributes["live"] is False

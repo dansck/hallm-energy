@@ -33,12 +33,14 @@ from .audit_outbox import AuditOutbox
 from .config import EnergyConfig
 from .const import POLICY_VERSION
 from .device_io import DeviceIO, WriteResult
+from .energy_core.ev_plan import TariffFacts
 from .ev_flow import EvShadow
 from .executor import Gates, GrantExecutor, Snapshot
 from .floor_table import FloorContext, FloorPlan, floor_plan, hold_floor_pct
 from .guard_flow import GuardShadow
 from .inputs import (
     build_inputs,
+    offpeak_hours_between,
     offpeak_steps,
     schedule_intervals,
     schedule_nt,
@@ -174,6 +176,25 @@ class EnergyController:
         if changed:
             self._notify()
 
+    def _tariff_facts(self, now: datetime, deadline: datetime | None) -> TariffFacts:
+        """Off-peak now needs the relay and the schedule to agree; off-peak time until a deadline
+        comes from the schedule alone."""
+        intervals = schedule_intervals(self.hass, self.config, now)
+        relay = self.hass.states.get(self.config.hdo_relay_entity)
+        relay_nt = None
+        if relay is not None and relay.state in ("on", "off"):
+            relay_nt = relay.state == "on"
+        planned = None if intervals is None else schedule_nt(intervals, now)
+        if relay_nt is None:
+            nt_now = None
+        elif planned is None:
+            nt_now = False if relay_nt is False else None  # the relay says off-peak, nobody vouches
+        else:
+            nt_now = relay_nt if planned == relay_nt else None
+        hours, covered = (None, False) if deadline is None else offpeak_hours_between(
+            intervals, now, deadline)
+        return TariffFacts(nt_now, hours, covered)
+
     async def async_set_ev_force(self, on: bool) -> None:
         """The "must charge" wish. The report follows at once, not on the next tick."""
         self.ev_force = on
@@ -186,8 +207,9 @@ class EnergyController:
             return
         try:
             await self.ev.async_refresh_calendar(now)
-            report = self.ev.evaluate(now, self.guard_report, self._grid_present(),
-                                      self.ev_force)
+            report = self.ev.evaluate(
+                now, self.guard_report, self._grid_present(), self.ev_force,
+                lambda deadline: self._tariff_facts(now, deadline))
         except Exception:
             _LOGGER.exception("EV report failed")
             return
@@ -540,7 +562,9 @@ def _ev_decision(report: dict | None) -> tuple | None:
     if report is None:
         return None
     request = report.get("request") or {}
+    gate = report.get("grid_charge") or {}
     return (report["state"], report["reason"], report.get("effective_target_pct"),
+            gate.get("allowed"),
             request.get("deadline_at"), request.get("feasible"), report.get("force_requested"),
             tuple((i["target"], i["value"]) for i in report.get("intents", ())))
 

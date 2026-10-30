@@ -9,7 +9,9 @@ import pytest
 from homeassistant.core import SupportsResponse
 
 from custom_components.hallm_energy.config import ConfigInvalidError, EnergyConfig
+from custom_components.hallm_energy.energy_core.ev_plan import TariffFacts, WallboxFacts
 from custom_components.hallm_energy.ev_flow import EvShadow
+from custom_components.hallm_energy.inputs import offpeak_hours_between
 from tests.test_controller import _controller, _fresh_state
 from tests.test_executor import FakeInverter
 from tests.test_inputs import CONFIG, NOW, OPTIONS, set_telemetry
@@ -340,13 +342,11 @@ async def test_a_forced_charge_would_unpause_drop_dynamic_modulation_and_go_full
     assert _intents(report) == {("pause", False), ("dynamic", False), ("intensity", 16.0)}
 
 
-async def test_a_state_that_needs_the_tariff_is_withheld_not_guessed(hass):
-    _car(hass, soc="33")
-    _calendar(hass, [])
-    _wallbox(hass)
-    _, report = await _state(hass, config=_wallbox_config())
-    assert report["state"] == "mobility_floor" and report["intents"] == []
-    assert "not evaluated" in report["intents_withheld"]
+async def test_a_state_that_needs_the_surplus_or_the_battery_is_withheld_not_guessed(hass):
+    from custom_components.hallm_energy.energy_core.ev_plan import plan_ev_intents
+
+    intents, why = plan_ev_intents("pv_charge", wallbox=WallboxFacts(), cap_a=16.0)
+    assert intents == () and "not evaluated" in why
 
 
 async def test_the_report_changes_no_wallbox_entity(hass):
@@ -460,3 +460,116 @@ async def test_the_forced_charge_plan_respects_a_ceiling_below_the_minimum(hass)
     await shadow.async_refresh_calendar(NOW)
     report = shadow.evaluate(NOW, {"ev_paused": False, "ev_current_cap_a": 2.0}, True, force=True)
     assert [(i["target"], i["value"]) for i in report["intents"]] == [("pause", True)]
+
+
+# --- the tariff ---------------------------------------------------------------------------------
+
+H = timedelta(hours=1)
+
+
+def _iv(start_h, end_h, nt):
+    return (NOW + start_h * H, NOW + end_h * H, nt)
+
+
+def test_off_peak_hours_are_counted_inside_the_span_and_coverage_is_reported():
+    schedule = (_iv(-2, 4, True), _iv(4, 20, False), _iv(20, 30, True))
+    assert offpeak_hours_between(schedule, NOW, NOW + 10 * H) == (4.0, True)
+    assert offpeak_hours_between(schedule, NOW, NOW + 26 * H) == (10.0, True)
+    assert offpeak_hours_between(schedule, NOW, NOW + 40 * H) == (14.0, False)  # a lower bound
+    assert offpeak_hours_between(schedule, NOW + 5 * H, NOW + 6 * H) == (0.0, True)
+    assert offpeak_hours_between(None, NOW, NOW + H) == (None, False)
+    assert offpeak_hours_between(schedule, NOW, NOW) == (0.0, True)
+
+
+def test_a_gap_in_the_schedule_is_not_coverage():
+    schedule = (_iv(0, 2, True), _iv(5, 8, True))
+    assert offpeak_hours_between(schedule, NOW, NOW + 8 * H) == (5.0, False)
+
+
+async def _controller_with_tariff(storage_hass, freezer, *, relay, schedule):
+    from tests.test_inputs import set_telemetry as telemetry
+
+    freezer.move_to(NOW)
+    FakeInverter(storage_hass)
+    telemetry(storage_hass, relay=relay, schedule=schedule)
+    controller = await _controller(storage_hass, _fresh_state(), live=True)
+    return controller
+
+
+def _sched(*items):
+    return [{"start": a.isoformat(), "end": b.isoformat(), "tariff": "NT" if nt else "VT"}
+            for a, b, nt in items]
+
+
+async def test_off_peak_now_needs_the_relay_and_the_schedule_to_agree(storage_hass, freezer):
+    night = _sched(_iv(-1, 5, True), _iv(5, 40, False))
+    controller = await _controller_with_tariff(storage_hass, freezer, relay="on", schedule=night)
+    assert controller._tariff_facts(NOW, None).nt_now is True
+    storage_hass.states.async_set("binary_sensor.hdo_nt", "off")
+    assert controller._tariff_facts(NOW, None).nt_now is None  # they disagree: unknown
+    storage_hass.states.async_set("binary_sensor.hdo_nt", "unavailable")
+    assert controller._tariff_facts(NOW, None).nt_now is None
+    day = _sched(_iv(-1, 5, False), _iv(5, 40, True))
+    controller = await _controller_with_tariff(storage_hass, freezer, relay="off", schedule=day)
+    assert controller._tariff_facts(NOW, None).nt_now is False
+
+
+async def test_a_relay_that_says_off_peak_without_a_schedule_is_not_believed(storage_hass, freezer):
+    controller = await _controller_with_tariff(
+        storage_hass, freezer, relay="on", schedule=_sched(_iv(10, 20, True)))
+    assert controller._tariff_facts(NOW, None).nt_now is None
+
+
+async def test_the_deadline_hours_come_from_the_schedule(storage_hass, freezer):
+    night = _sched(_iv(-1, 5, True), _iv(5, 20, False), _iv(20, 30, True))
+    controller = await _controller_with_tariff(storage_hass, freezer, relay="on", schedule=night)
+    facts = controller._tariff_facts(NOW, NOW + 24 * H)
+    assert facts == TariffFacts(True, 9.0, True)
+
+
+async def test_a_routine_charge_in_peak_is_paused_and_in_off_peak_it_runs(hass):
+    _car(hass, soc="33")
+    _calendar(hass, [])
+    _wallbox(hass, paused="off", intensity="16", dynamic="off")
+    shadow = EvShadow(hass, _wallbox_config())
+    await shadow.async_refresh_calendar(NOW)
+    peak = shadow.evaluate(NOW, None, True, tariff=lambda d: TariffFacts(False, None, False))
+    assert peak["state"] == "mobility_floor" and peak["grid_charge"]["allowed"] is False
+    assert {(i["target"], i["value"]) for i in peak["intents"]} == {("pause", True)}
+    off = shadow.evaluate(NOW, None, True, tariff=lambda d: TariffFacts(True, None, False))
+    assert off["grid_charge"]["allowed"] is True and off["deye_mode_required"] == "to load"
+    assert off["intents"] == []  # already running at full power
+
+
+async def test_a_deadline_in_peak_charges_only_when_off_peak_time_runs_short(hass):
+    _car(hass, soc="50")
+    start = (NOW + timedelta(hours=6)).isoformat()
+    _calendar(hass, [{"start": start, "end": start, "summary": "EV 100"}])
+    _wallbox(hass, paused="on", intensity="16", dynamic="off")
+    shadow = EvShadow(hass, _wallbox_config())
+    await shadow.async_refresh_calendar(NOW)
+    enough = shadow.evaluate(NOW, None, True, tariff=lambda d: TariffFacts(False, 5.0, True))
+    short = shadow.evaluate(NOW, None, True, tariff=lambda d: TariffFacts(False, 1.0, True))
+    assert enough["state"] == short["state"] == "deadline"
+    assert enough["grid_charge"]["allowed"] is False and enough["intents"] == []  # stays paused
+    assert short["grid_charge"]["allowed"] is True
+    assert [(i["target"], i["value"]) for i in short["intents"]] == [("pause", False)]
+
+
+async def test_an_unknown_tariff_withholds_the_plan_instead_of_guessing(hass):
+    _car(hass, soc="33")
+    _calendar(hass, [])
+    _wallbox(hass)
+    shadow = EvShadow(hass, _wallbox_config())
+    await shadow.async_refresh_calendar(NOW)
+    report = shadow.evaluate(NOW, None, True, tariff=lambda d: TariffFacts(None, None, False))
+    assert report["intents"] == [] and report["intents_withheld"] == "tariff unknown"
+    assert report["grid_charge"]["allowed"] is None and "deye_mode_required" not in report
+
+
+def test_the_peak_permission_is_a_boolean_option():
+    assert EnergyConfig.from_options(OPTIONS).ev_deadline_allow_peak is True
+    assert EnergyConfig.from_options(
+        {**OPTIONS, "ev_deadline_allow_peak": False}).ev_deadline_allow_peak is False
+    with pytest.raises(ConfigInvalidError):
+        EnergyConfig.from_options({**OPTIONS, "ev_deadline_allow_peak": "yes"})

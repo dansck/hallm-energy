@@ -87,6 +87,27 @@ def schedule_nt(intervals: tuple[Interval, ...], at: datetime) -> bool | None:
     return found.pop() if len(found) == 1 else None
 
 
+def offpeak_hours_between(intervals: tuple[Interval, ...] | None, start: datetime,
+                          end: datetime) -> tuple[float | None, bool]:
+    """Off-peak hours of the schedule within `[start, end)` and whether the schedule covers the
+    whole span (when it does not, the hours are a lower bound). `None` without a schedule."""
+    if not intervals:
+        return None, False
+    if end <= start:
+        return 0.0, True
+    spans = sorted((a, b, nt) for a, b, nt in intervals if b > start and a < end)
+    cursor, seconds, covered = start, 0.0, True
+    for a, b, nt in spans:
+        if a > cursor:
+            covered = False
+        if b > cursor:
+            low = max(a, cursor)
+            if nt:
+                seconds += (min(b, end) - low).total_seconds()
+            cursor = max(cursor, b)
+    return seconds / 3600.0, covered and cursor >= end
+
+
 def parse_hhmm(value: float | None) -> time | None:
     if value is None or value != int(value) or value < 0:
         return None

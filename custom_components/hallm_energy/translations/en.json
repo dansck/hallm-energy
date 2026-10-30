@@ -70,7 +70,8 @@
           "ev_wallbox_intensity_entity": "Wallbox charging current (optional)",
           "ev_wallbox_max_intensity_entity": "Wallbox maximum current (optional)",
           "ev_wallbox_dynamic_entity": "Wallbox dynamic modulation switch (optional)",
-          "ev_soc_updated_entity": "EV data timestamp sensor (optional)"
+          "ev_soc_updated_entity": "EV data timestamp sensor (optional)",
+          "ev_deadline_allow_peak": "EV deadline may use peak tariff"
         },
         "data_description": {
           "soc_entity": "Sensor with the battery state of charge (%).",
@@ -138,7 +139,8 @@
           "ev_wallbox_intensity_entity": "The current the wallbox charges with.",
           "ev_wallbox_max_intensity_entity": "The ceiling for the charging current.",
           "ev_wallbox_dynamic_entity": "The wallbox follows the surplus on its own but keeps at least its minimum current, so it does not stop when the surplus is small.",
-          "ev_soc_updated_entity": "When the car last sent its data. Without it the age of the battery level is the age of the Home Assistant report, which a cached cloud value keeps looking fresh."
+          "ev_soc_updated_entity": "When the car last sent its data. Without it the age of the battery level is the age of the Home Assistant report, which a cached cloud value keeps looking fresh.",
+          "ev_deadline_allow_peak": "A request from the calendar may charge in peak tariff, but only when the off-peak time before its deadline is not enough. Routine charging never uses peak."
         }
       }
     },
@@ -220,7 +222,8 @@
           "ev_wallbox_intensity_entity": "Wallbox charging current (optional)",
           "ev_wallbox_max_intensity_entity": "Wallbox maximum current (optional)",
           "ev_wallbox_dynamic_entity": "Wallbox dynamic modulation switch (optional)",
-          "ev_soc_updated_entity": "EV data timestamp sensor (optional)"
+          "ev_soc_updated_entity": "EV data timestamp sensor (optional)",
+          "ev_deadline_allow_peak": "EV deadline may use peak tariff"
         },
         "data_description": {
           "soc_entity": "Sensor with the battery state of charge (%).",
@@ -288,7 +291,8 @@
           "ev_wallbox_intensity_entity": "The current the wallbox charges with.",
           "ev_wallbox_max_intensity_entity": "The ceiling for the charging current.",
           "ev_wallbox_dynamic_entity": "The wallbox follows the surplus on its own but keeps at least its minimum current, so it does not stop when the surplus is small.",
-          "ev_soc_updated_entity": "When the car last sent its data. Without it the age of the battery level is the age of the Home Assistant report, which a cached cloud value keeps looking fresh."
+          "ev_soc_updated_entity": "When the car last sent its data. Without it the age of the battery level is the age of the Home Assistant report, which a cached cloud value keeps looking fresh.",
+          "ev_deadline_allow_peak": "A request from the calendar may charge in peak tariff, but only when the off-peak time before its deadline is not enough. Routine charging never uses peak."
         }
       }
     },

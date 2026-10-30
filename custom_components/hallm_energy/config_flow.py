@@ -15,6 +15,7 @@ from .config import (
     CONF_COUNTER,
     CONF_COUNTER_EPOCH,
     CONF_ENABLE_MORNING_DIP,
+    CONF_EV_ALLOW_VT,
     CONF_EV_CALENDAR,
     CONF_EV_CONNECTED,
     CONF_EV_DYNAMIC,
@@ -84,6 +85,7 @@ def _schema() -> vol.Schema:
                         (CONF_EV_MAX_INTENSITY, "number"), (CONF_EV_DYNAMIC, "switch"),
                         (CONF_EV_SOC_UPDATED, "sensor")):
         fields[vol.Optional(key)] = _entity(domain)
+    fields[vol.Required(CONF_EV_ALLOW_VT, default=True)] = selector.BooleanSelector()
     fields[vol.Required(CONF_ENABLE_MORNING_DIP, default=False)] = selector.BooleanSelector()
     fields[vol.Required(CONF_MANAGE_FLOORS, default=False)] = selector.BooleanSelector()
     fields[vol.Optional(CONF_PROFILE_TOPIC)] = selector.TextSelector()

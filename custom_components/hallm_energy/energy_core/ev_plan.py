@@ -5,6 +5,10 @@ dynamic modulation follows the surplus but keeps at least that minimum, so it do
 the surplus is smaller: it draws the rest from the grid or the battery. A plan that wants "surplus
 only" therefore has to pause the wallbox itself, and a plan that wants full power has to switch the
 dynamic modulation off. Only intents that differ from the present wallbox state are returned.
+
+Charging from the grid is allowed by the tariff gate: routine charging (mobility floor) only in
+off-peak; a deadline in off-peak, and in peak only when the off-peak time left before the deadline
+is not enough and the owner allows it. An unknown tariff never opens the gate.
 """
 
 from __future__ import annotations
@@ -20,7 +24,45 @@ MIN_POWER_KW = PHASES * VOLTAGE_V * MIN_CURRENT_A / 1000.0  # 4.14 kW
 
 IntentTarget = Literal["pause", "intensity", "max_intensity", "dynamic"]
 IntentPhase = Literal["protect", "prepare", "enable"]
-_UNPLANNED = ("mobility_floor", "deadline", "battery_assist", "pv_charge")
+_UNPLANNED = ("battery_assist", "pv_charge")
+_GRID_STATES = ("mobility_floor", "deadline")
+
+
+@dataclass(frozen=True)
+class TariffFacts:
+    """`nt_now`: off-peak right now (`None` = unknown). `nt_hours_to_deadline`: off-peak hours
+    between now and the deadline, `covered`: whether the schedule reaches the deadline (when it
+    does not, the figure is only a lower bound)."""
+
+    nt_now: bool | None = None
+    nt_hours_to_deadline: float | None = None
+    covered: bool = False
+
+
+def grid_charge_gate(
+    state: str,
+    *,
+    tariff: TariffFacts | None,
+    hours_needed: float | None,
+    allow_peak_for_deadline: bool,
+) -> tuple[bool | None, str]:
+    """`(allowed, reason)` for charging from the grid in this state; `allowed` is `None` when
+    the tariff is not known well enough to say."""
+    if tariff is None or tariff.nt_now is None:
+        return None, "tariff unknown"
+    if tariff.nt_now:
+        return True, "off-peak"
+    if state == "mobility_floor":
+        return False, "peak: routine charging waits for off-peak"
+    if not allow_peak_for_deadline:
+        return False, "peak: the owner does not allow peak charging for a deadline"
+    if hours_needed is None or tariff.nt_hours_to_deadline is None:
+        return None, "deadline energy or off-peak time unknown"
+    if tariff.nt_hours_to_deadline >= hours_needed:
+        return False, "peak: the off-peak time before the deadline is enough"
+    if not tariff.covered:
+        return None, "the schedule does not reach the deadline"
+    return True, "peak: the off-peak time before the deadline is not enough"
 
 
 @dataclass(frozen=True)
@@ -71,18 +113,30 @@ def _full_power(
     return tuple(steps), None
 
 
+def _charge(wallbox: WallboxFacts, cap_a: float | None):
+    if cap_a is None or not math.isfinite(cap_a) or cap_a < 0:
+        return (), "current ceiling unavailable"
+    limit_a = math.floor(cap_a)
+    if limit_a < MIN_CURRENT_A:
+        return _pause(wallbox, "ceiling below the wallbox minimum: no charging power available")
+    return _full_power(wallbox, limit_a)
+
+
 def plan_ev_intents(
     state: str,
     *,
     wallbox: WallboxFacts,
     cap_a: float | None,
+    tariff: TariffFacts | None = None,
+    hours_needed: float | None = None,
+    allow_peak_for_deadline: bool = True,
 ) -> tuple[tuple[EvIntent, ...], str | None]:
     """`(intents, withheld_reason)`. `cap_a` is the current ceiling in force (the phase guard's
     cap), `None` when it is not known. Charging is discrete: off, or between the wallbox minimum
     and the ceiling. A ceiling below the minimum means no charging power at all, so the plan is a
     pause; it is never raised to the minimum. An unknown or invalid ceiling never permits
-    charging. A state whose plan depends on things not evaluated here (tariff window, surplus,
-    battery) gives no intents and says why."""
+    charging. A state whose plan depends on things not evaluated here (surplus, battery) gives
+    no intents and says why."""
     if state == "away":
         return (), None
     if state == "curtailed":
@@ -90,12 +144,16 @@ def plan_ev_intents(
     if state in ("idle", "deferred"):
         return _pause(wallbox, f"{state}: no charging wanted")
     if state in _UNPLANNED:
-        return (), "tariff window and surplus are not evaluated yet"
-    if state != "force_charge":
-        return (), f"unknown state {state}"
-    if cap_a is None or not math.isfinite(cap_a) or cap_a < 0:
-        return (), "current ceiling unavailable"
-    limit_a = math.floor(cap_a)
-    if limit_a < MIN_CURRENT_A:
-        return _pause(wallbox, "ceiling below the wallbox minimum: no charging power available")
-    return _full_power(wallbox, limit_a)
+        return (), "surplus and battery are not evaluated yet"
+    if state == "force_charge":
+        return _charge(wallbox, cap_a)
+    if state in _GRID_STATES:
+        allowed, reason = grid_charge_gate(
+            state, tariff=tariff, hours_needed=hours_needed,
+            allow_peak_for_deadline=allow_peak_for_deadline)
+        if allowed is None:
+            return (), reason
+        if not allowed:
+            return _pause(wallbox, reason)
+        return _charge(wallbox, cap_a)
+    return (), f"unknown state {state}"
