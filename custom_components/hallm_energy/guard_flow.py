@@ -10,7 +10,7 @@ from typing import Any
 from homeassistant.core import HomeAssistant
 
 from .config import EnergyConfig
-from .energy_core.phase_guard import PhaseGuardState, branch_currents, phase_guard
+from .energy_core.phase_guard import STALE_S, PhaseGuardState, branch_currents, phase_guard
 
 
 @dataclass(frozen=True)
@@ -67,7 +67,10 @@ class GuardShadow:
             default_ev_current_cap_a=config.guard_ev_cap_a,
         )
         self._state = decision.next_state
+        stale = reading.measured_at is None or (
+            now - reading.measured_at).total_seconds() > STALE_S
         return {
+            "stale": stale,
             "import_a": worst_import,
             "export_a": worst_export,
             "ev_current_cap_a": decision.ev_current_cap_a,

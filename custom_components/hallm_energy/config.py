@@ -56,6 +56,7 @@ CONF_GUARD_EV_CAP = "guard_ev_cap_a"
 CONF_GUARD_EXPORT_CAP = "guard_export_cap_w"
 CONF_ENABLE_MORNING_DIP = "enable_morning_dip"
 CONF_MANAGE_FLOORS = "manage_floors"
+CONF_MANAGE_EV = "manage_ev"
 CONF_OUTLOOK_MARGIN = "outlook_margin_pct"
 CONF_OUTLOOK_DAYS = "outlook_days"
 CONF_DIP_FLOOR = "morning_dip_floor_pct"
@@ -174,6 +175,7 @@ class EnergyConfig:
     guard_export_cap_w: float = NUMBER_OPTIONS[CONF_GUARD_EXPORT_CAP][0]
     enable_morning_dip: bool = False
     manage_floors: bool = False
+    manage_ev: bool = False
     floor: FloorParams | None = None
     morning: MorningParams | None = None
     profile_topic: str | None = None
@@ -241,6 +243,9 @@ class EnergyConfig:
         manage = options.get(CONF_MANAGE_FLOORS, False)
         if not isinstance(manage, bool):
             raise ConfigInvalidError("manage_floors: expected a boolean")
+        manage_ev = options.get(CONF_MANAGE_EV, False)
+        if not isinstance(manage_ev, bool):
+            raise ConfigInvalidError("manage_ev: expected a boolean")
         grid_relay = options.get(CONF_GRID_RELAY) or None
         raw_voltage = options.get(CONF_GRID_VOLTAGE) or []
         if (not isinstance(raw_voltage, list | tuple)
@@ -309,6 +314,7 @@ class EnergyConfig:
             guard_export_cap_w=numbers[CONF_GUARD_EXPORT_CAP],
             enable_morning_dip=enable_dip,
             manage_floors=manage,
+            manage_ev=manage_ev,
             floor=FloorParams(
                 reserve_pct=numbers[CONF_RESERVE],
                 outlook_margin_pct=numbers[CONF_OUTLOOK_MARGIN],

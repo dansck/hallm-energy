@@ -161,6 +161,15 @@ def _start_loop(hass: HomeAssistant, entry: ConfigEntry, controller: EnergyContr
     entry.async_on_unload(async_track_time_interval(hass, tick, TICK_INTERVAL))
     if controller.config.phase_current_entities:
         entry.async_on_unload(async_track_time_interval(hass, guard, GUARD_INTERVAL))
+
+    @callback
+    def ev_fast(_now=None) -> None:
+        # not skipped while a write is in flight: a protective pause has to preempt it
+        entry.async_create_background_task(
+            hass, controller.async_ev_cycle(), f"{DOMAIN} EV cycle")
+
+    if controller.ev.enabled:
+        entry.async_on_unload(async_track_time_interval(hass, ev_fast, GUARD_INTERVAL))
     entry.async_on_unload(async_track_time_interval(hass, deliver, AUDIT_DELIVERY_INTERVAL))
     entry.async_on_unload(async_track_state_change_event(
         hass, [controller.config.shadow_entity, controller.config.feature_entity], gates_changed

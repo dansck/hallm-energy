@@ -122,6 +122,11 @@ class StatusSensor(SensorEntity):
                 "floors": tick.floors,
                 "phase_guard": controller.guard_report,
                 "ev": controller.ev_report,
+                "ev_executor": {
+                    "live": controller.ev_exec.last.live, "result": controller.ev_exec.last.result,
+                    "reason": controller.ev_exec.last.reason,
+                    "writes": [f"{w.op.entity_id}={w.op.value}:{w.outcome}"
+                               for w in controller.ev_exec.last.writes]},
                 "recovery_action": None if tick.recovery is None else tick.recovery.action,
                 "recovery_action_reason": None if tick.recovery is None
                 else tick.recovery.reason,

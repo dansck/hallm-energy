@@ -223,7 +223,8 @@ class EvShadow:
         if cfg.ev_wallbox_pause_entity:
             facts = self._wallbox_facts()
             if guard is not None:
-                cap_a = guard["ev_current_cap_a"]
+                # measurements gone stale: no raising of the load, so the ceiling is unknown
+                cap_a = None if guard.get("stale") else guard["ev_current_cap_a"]
             else:  # a configured guard that has not reported leaves the ceiling unknown
                 cap_a = None if cfg.phase_current_entities else cfg.guard_ev_cap_a
             intents, withheld = plan_ev_intents(

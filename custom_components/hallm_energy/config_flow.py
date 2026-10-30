@@ -31,6 +31,7 @@ from .config import (
     CONF_GRID_VOLTAGE,
     CONF_HDO_RELAY,
     CONF_HDO_SCHEDULE,
+    CONF_MANAGE_EV,
     CONF_MANAGE_FLOORS,
     CONF_NOTIFY_SERVICE,
     CONF_PHASE_CURRENTS,
@@ -88,6 +89,7 @@ def _schema() -> vol.Schema:
     fields[vol.Required(CONF_EV_ALLOW_VT, default=True)] = selector.BooleanSelector()
     fields[vol.Required(CONF_ENABLE_MORNING_DIP, default=False)] = selector.BooleanSelector()
     fields[vol.Required(CONF_MANAGE_FLOORS, default=False)] = selector.BooleanSelector()
+    fields[vol.Required(CONF_MANAGE_EV, default=False)] = selector.BooleanSelector()
     fields[vol.Optional(CONF_PROFILE_TOPIC)] = selector.TextSelector()
     for key, (default, low, high) in NUMBER_OPTIONS.items():
         fields[vol.Required(key, default=default)] = selector.NumberSelector(

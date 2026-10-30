@@ -34,6 +34,7 @@ from .config import EnergyConfig
 from .const import POLICY_VERSION
 from .device_io import DeviceIO, WriteResult
 from .energy_core.ev_plan import TariffFacts
+from .ev_executor import EvExecutor
 from .ev_flow import EvShadow
 from .executor import Gates, GrantExecutor, Snapshot
 from .floor_table import FloorContext, FloorPlan, floor_plan, hold_floor_pct
@@ -116,6 +117,8 @@ class EnergyController:
         self.guard_report: dict | None = None  # report only: nothing is written
         self._guard_failing = False
         self.ev = EvShadow(hass, config)
+        self.ev_exec = EvExecutor(
+            DeviceIO(hass, call_timeout_s=10.0, readback_timeout_s=10.0), config, self.gates)
         self.ev_report: dict | None = None  # report only: nothing is written
         self.ev_force = False  # "must charge": set by a switch, restored by it after a restart
         self.profiles = ProfileReceiver()
@@ -201,15 +204,19 @@ class EnergyController:
         await self._observe_ev(dt_util.utcnow())
         self._notify()
 
+    def _ev_report(self, now: datetime) -> dict | None:
+        return self.ev.evaluate(
+            now, self.guard_report, self._grid_present(), self.ev_force,
+            lambda deadline: self._tariff_facts(now, deadline))
+
     async def _observe_ev(self, now: datetime) -> None:
-        """The EV report: outside the control lock too (a slow calendar never delays a cycle)."""
+        """The EV report and, when the gate is live, its carrying out. Outside the control lock
+        too: a slow calendar or wallbox never delays a grant cycle."""
         if not self.ev.enabled:
             return
         try:
             await self.ev.async_refresh_calendar(now)
-            report = self.ev.evaluate(
-                now, self.guard_report, self._grid_present(), self.ev_force,
-                lambda deadline: self._tariff_facts(now, deadline))
+            report = self._ev_report(now)
         except Exception:
             _LOGGER.exception("EV report failed")
             return
@@ -217,6 +224,20 @@ class EnergyController:
         self.ev_report = report
         if changed:
             self._notify()
+        if report is not None and report.get("intents"):
+            before = (self.ev_exec.last.result, self.ev_exec.last.reason)
+            try:
+                await self.ev_exec.async_apply(
+                    report, now=now, recheck=lambda: self._ev_report(dt_util.utcnow()))
+            except Exception:
+                _LOGGER.exception("EV write failed")
+            if (self.ev_exec.last.result, self.ev_exec.last.reason) != before:
+                self._notify()
+
+    async def async_ev_cycle(self) -> None:
+        """One fast EV cycle (every second): the guard first, then the EV plan and its writes."""
+        self.guard_step()
+        await self._observe_ev(dt_util.utcnow())
 
     async def _observe_conditions(self, status: TickStatus) -> None:
         """Owner alerts (`notify_service`) for CRITICAL events only: the grid is gone, or the
