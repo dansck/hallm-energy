@@ -682,7 +682,7 @@ async def test_a_request_above_the_hold_level_waits_for_the_last_hours_before_de
     assert early["state"] == "deadline" and early["grid_charge"]["allowed"] is False
     assert "shortly before departure" in early["grid_charge"]["reason"]
     assert {(i["target"], i["value"]) for i in early["intents"]} == {("pause", True)}
-    assert early["car_limit"] == {"desired": 80.0, "current": 80.0}
+    assert early["car_limit"] == {"desired": None, "current": 80.0}
     # 2.5 h before departure: the limit is raised ahead of time, charging has not started yet
     ahead = shadow.evaluate(NOW + timedelta(hours=17, minutes=30), None, True,
                             tariff=lambda d: TariffFacts(True, 2.5, True))
@@ -711,17 +711,17 @@ async def test_a_request_at_the_hold_level_needs_no_waiting_and_no_limit_change(
     await shadow.async_refresh_calendar(NOW)
     report = shadow.evaluate(NOW, None, True, tariff=lambda d: TariffFacts(True, 15.0, True))
     assert report["grid_charge"]["allowed"] is True
-    assert report["car_limit"] == {"desired": 80.0, "current": 80.0}
+    assert report["car_limit"] == {"desired": None, "current": 80.0}
 
 
-async def test_after_the_departure_the_limit_goes_back_to_the_hold_level(hass):
+async def test_the_limit_on_the_car_is_never_asked_to_come_back_down(hass):
     _car(hass, soc="100")
     _calendar(hass, [])
     hass.states.async_set(LIMIT, "100")
     shadow = EvShadow(hass, _limit_config())
     await shadow.async_refresh_calendar(NOW)
     report = shadow.evaluate(NOW, None, True)
-    assert report["car_limit"] == {"desired": 80.0, "current": 100.0}
+    assert report["car_limit"] == {"desired": None, "current": 100.0}
 
 
 # --- wait for sun only when it is coming --------------------------------------------------------

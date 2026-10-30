@@ -112,16 +112,18 @@ def desired_car_limit_pct(
     hours_needed: float | None,
     margin_h: float,
     lead_h: float,
-) -> float:
-    """The limit to have set on the car. Normally the hold level. For a request above it the limit
-    is raised shortly before the top-up has to start (the cloud takes a while to apply it) and goes
-    back to the hold level when the request is over. A request whose energy is unknown raises it
-    when the deadline is near, so the car can never stop below what was asked for."""
-    base = ceil10(hold_pct)
+) -> float | None:
+    """The limit that has to be set on the car, or `None` when nothing has to be done.
+
+    Only a request above the hold level needs it: the limit is raised shortly before the final
+    top-up has to start (the cloud takes a while to apply it). It is never lowered again: the car
+    puts itself back to its default when a charge is finished, and a charge that must stop earlier
+    is stopped by pausing the wallbox (the car cannot be set below 50 %). A request whose energy is
+    unknown raises it when the deadline is near, so the car can never stop below what was asked."""
     if request_target_pct is None or request_target_pct <= hold_pct or hours_to_deadline is None:
-        return base
+        return None
     ahead = (hours_needed if hours_needed is not None else 6.0) + margin_h + lead_h
-    return ceil10(request_target_pct) if hours_to_deadline <= ahead else base
+    return ceil10(request_target_pct) if hours_to_deadline <= ahead else None
 
 
 def mobility_floor_needed(

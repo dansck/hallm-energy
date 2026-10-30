@@ -403,3 +403,10 @@ async def test_no_limit_entity_or_no_desired_value_writes_nothing(storage_hass, 
     writer = _limit_writer(storage_hass)
     writer.request(None, NOW)
     assert device.calls == []
+
+
+async def test_the_car_limit_is_never_lowered(storage_hass, device):
+    storage_hass.states.async_set(LIMIT, "100")
+    writer = _limit_writer(storage_hass)
+    writer.request(90.0, NOW)
+    assert writer.last_result == "in place" and device.calls == []

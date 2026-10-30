@@ -3,6 +3,7 @@
 The limit lives in the vehicle cloud and takes a while to be applied, so it has a writer of its
 own: a slow confirmation must never hold up the wallbox, whose protective pause cannot wait.
 It is carried out under the same gate as the wallbox writer (wallbox management on, shadow off).
+The limit is only ever raised: the car puts itself back to its default when a charge is finished.
 A write is confirmed by reading the value back; one attempt at a time; a failed attempt is not
 repeated for `RETRY_AFTER`.
 """
@@ -50,7 +51,7 @@ class CarLimitWriter:
             self.last_result = "shadow"
             return
         current = self.io.read(entity)
-        if current == desired:
+        if current is not None and current >= desired:
             self.last_result = "in place"
             return
         if self._task is not None and not self._task.done():
