@@ -118,7 +118,8 @@ entities (all of them can be changed later in the integration's options):
 | Grid present relay (optional), enable morning exception | binary sensor on while the grid is present (without it the morning exception never starts); gate, off by default |
 | Manage slot floors | gate, off by default: write the planned floors (live mode only) |
 | Audit topic (optional) | MQTT topic for audit events, acknowledged on `<topic>/ack`; empty = delivery paused, events kept |
-| Notification service (optional) | A `notify.*` service that receives alerts about CRITICAL events only: a grid outage (the grid relay off or unavailable for a minute) and an unreachable inverter (battery SOC or the charge settings unavailable for five minutes). Repeated after 6 h while it lasts; a failing service never affects the control loop. Everything else is handled by the integration itself; empty = no notifications |
+| Notification service (optional) | A `notify.*` service that receives alerts about CRITICAL events only: a grid outage (the grid relay off or unavailable for a minute), a grid voltage out of range (a phase voltage outside 210-245 V for 30 seconds; needs the optional `Grid voltage sensors`) and an unreachable inverter (battery SOC or the charge settings unavailable for five minutes). Repeated after 6 h while it lasts; a failing service never affects the control loop. Everything else is handled by the integration itself; empty = no notifications |
+| Grid voltage sensors (optional) | One voltage sensor per phase; a value outside 210-245 V for 30 seconds notifies (like a grid outage). Unavailable sensors are not a voltage problem (the inverter check covers them). Empty = voltage is not watched |
 
 Recovery parameters (reserve, target, wait for PV, battery capacity and
 efficiency, budget factor, …) have defaults and can be changed

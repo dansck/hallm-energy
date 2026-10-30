@@ -223,3 +223,86 @@ async def test_a_broken_notifier_never_breaks_a_tick(storage_hass, fake_inverter
     await controller.async_tick(NOW)
     status = await controller.async_tick(NOW + timedelta(minutes=6))
     assert status.result != "error"
+
+
+# --- grid voltage out of range (replaces a phone alert that watched the same thresholds) ---------
+
+VOLTAGES = ("sensor.v_l1", "sensor.v_l2", "sensor.v_l3")
+
+
+def _with_voltage(controller):
+    controller.config = replace(controller.config, grid_voltage_entities=VOLTAGES)
+    return controller
+
+
+def _set_voltages(hass, l1="230", l2="231", l3="229"):
+    for entity, value in zip(VOLTAGES, (l1, l2, l3), strict=True):
+        hass.states.async_set(entity, value)
+
+
+@pytest.mark.parametrize(("l1", "l2", "l3", "culprit"), [
+    ("246", "231", "229", "sensor.v_l1"),
+    ("230", "209.9", "229", "sensor.v_l2"),
+    ("230", "231", "251.3", "sensor.v_l3"),
+])
+async def test_a_phase_voltage_out_of_range_is_reported_after_thirty_seconds(
+        storage_hass, fake_inverter, l1, l2, l3, culprit):
+    fake = FakeNotify(storage_hass)
+    controller = _controller_with_notifier(
+        _with_voltage(await _controller(storage_hass, empty_state(), live=False)), storage_hass)
+    _set_voltages(storage_hass)
+    await controller.async_tick(NOW)
+    assert fake.calls == []
+    _set_voltages(storage_hass, l1, l2, l3)
+    await controller.async_tick(NOW + timedelta(seconds=10))
+    assert fake.calls == []                                   # not yet: 30 s
+    await controller.async_tick(NOW + timedelta(seconds=45))
+    assert len(fake.calls) == 1
+    assert "Grid voltage out of range" in fake.calls[0]["message"]
+    assert culprit in fake.calls[0]["message"]
+
+
+async def test_a_voltage_spike_that_passes_is_not_reported(storage_hass, fake_inverter):
+    fake = FakeNotify(storage_hass)
+    controller = _controller_with_notifier(
+        _with_voltage(await _controller(storage_hass, empty_state(), live=False)), storage_hass)
+    _set_voltages(storage_hass, l1="250")
+    await controller.async_tick(NOW)
+    _set_voltages(storage_hass)                               # back to normal
+    await controller.async_tick(NOW + timedelta(seconds=40))
+    assert fake.calls == []
+
+
+async def test_normal_voltages_and_unavailable_sensors_do_not_notify(storage_hass, fake_inverter):
+    fake = FakeNotify(storage_hass)
+    controller = _controller_with_notifier(
+        _with_voltage(await _controller(storage_hass, empty_state(), live=False)), storage_hass)
+    _set_voltages(storage_hass, "245", "210", "230")          # the limits themselves are fine
+    await controller.async_tick(NOW)
+    await controller.async_tick(NOW + timedelta(minutes=2))
+    _set_voltages(storage_hass, "unavailable", "unknown", "x")
+    await controller.async_tick(NOW + timedelta(minutes=3))
+    await controller.async_tick(NOW + timedelta(minutes=4))
+    assert not any("Grid voltage" in c["message"] for c in fake.calls)
+
+
+async def test_without_voltage_sensors_nothing_is_watched(storage_hass, fake_inverter):
+    fake = FakeNotify(storage_hass)
+    controller = _controller_with_notifier(
+        await _controller(storage_hass, empty_state(), live=False), storage_hass)
+    _set_voltages(storage_hass, "300", "300", "300")
+    await controller.async_tick(NOW)
+    await controller.async_tick(NOW + timedelta(minutes=2))
+    assert fake.calls == []
+
+
+@pytest.mark.parametrize("value", ["sensor.v", [5], ["light.v"], ["v_l1"]])
+def test_voltage_sensors_are_validated(value):
+    with pytest.raises(ConfigInvalidError):
+        EnergyConfig.from_options({**OPTIONS, "grid_voltage_entities": value})
+
+
+def test_voltage_sensors_are_optional_and_kept_as_a_tuple():
+    assert EnergyConfig.from_options(OPTIONS).grid_voltage_entities == ()
+    cfg = EnergyConfig.from_options({**OPTIONS, "grid_voltage_entities": list(VOLTAGES)})
+    assert cfg.grid_voltage_entities == VOLTAGES

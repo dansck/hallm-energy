@@ -67,6 +67,8 @@ class ProvisionError(Exception):
 
 
 GRID_OUTAGE_AFTER = timedelta(minutes=1)      # a flicker of the relay is not an outage
+GRID_VOLTAGE_AFTER = timedelta(seconds=30)    # an excursion that lasts, not a single sample
+GRID_VOLTAGE_MIN_V, GRID_VOLTAGE_MAX_V = 210.0, 245.0
 INVERTER_GONE_AFTER = timedelta(minutes=5)    # the BMS/inverter channel is gone
 
 
@@ -160,10 +162,29 @@ class EnergyController:
             "grid_outage", grid_gone,
             "Grid outage: the grid relay is off or unavailable. The integration does no grid "
             "charging until the grid is back.", now, after=GRID_OUTAGE_AFTER)
+        bad_voltage = self._abnormal_grid_voltage()
+        await notifier.async_observe(
+            "grid_voltage", bad_voltage is not None,
+            f"Grid voltage out of range: {bad_voltage}. Check the supply "
+            f"({GRID_VOLTAGE_MIN_V:.0f}-{GRID_VOLTAGE_MAX_V:.0f} V is normal).", now,
+            after=GRID_VOLTAGE_AFTER)
         await notifier.async_observe(
             "inverter_unreachable", inverter_gone,
             "The inverter cannot be reached: battery SOC or the charge settings are unavailable. "
             "The integration changes nothing until they are back.", now, after=INVERTER_GONE_AFTER)
+
+    def _abnormal_grid_voltage(self) -> str | None:
+        """`"<entity>: <V> V"` of the first phase outside the normal range, else `None`; an
+        unavailable sensor is not a voltage problem (the inverter check covers it)."""
+        for entity in self.config.grid_voltage_entities:
+            state = self.hass.states.get(entity)
+            try:
+                volts = float(state.state) if state is not None else None
+            except (TypeError, ValueError):
+                volts = None
+            if volts is not None and not GRID_VOLTAGE_MIN_V <= volts <= GRID_VOLTAGE_MAX_V:
+                return f"{entity}: {volts:g} V"
+        return None
 
     async def async_deliver_audit(self) -> None:
         """One audit delivery round (own worker; takes the control lock only briefly)."""

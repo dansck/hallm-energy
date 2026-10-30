@@ -34,6 +34,7 @@ CONF_PROFILE_TOPIC = "house_load_profile_topic"
 CONF_GRID_RELAY = "grid_relay_entity"
 CONF_AUDIT_TOPIC = "audit_topic"
 CONF_NOTIFY_SERVICE = "notify_service"
+CONF_GRID_VOLTAGE = "grid_voltage_entities"
 CONF_ENABLE_MORNING_DIP = "enable_morning_dip"
 CONF_MANAGE_FLOORS = "manage_floors"
 CONF_OUTLOOK_MARGIN = "outlook_margin_pct"
@@ -110,6 +111,7 @@ class EnergyConfig:
     audit_topic: str | None = None
     grid_relay_entity: str | None = None
     notify_service: str | None = None
+    grid_voltage_entities: tuple[str, ...] = ()
     enable_morning_dip: bool = False
     manage_floors: bool = False
     floor: FloorParams | None = None
@@ -180,6 +182,11 @@ class EnergyConfig:
         if not isinstance(manage, bool):
             raise ConfigInvalidError("manage_floors: expected a boolean")
         grid_relay = options.get(CONF_GRID_RELAY) or None
+        raw_voltage = options.get(CONF_GRID_VOLTAGE) or []
+        if (not isinstance(raw_voltage, list | tuple)
+                or any(not isinstance(e, str) or not e.startswith("sensor.")
+                       for e in raw_voltage)):
+            raise ConfigInvalidError("grid_voltage_entities: expected a list of sensor entities")
         notify_service = options.get(CONF_NOTIFY_SERVICE) or None
         if notify_service is not None and (
                 not isinstance(notify_service, str)
@@ -202,6 +209,7 @@ class EnergyConfig:
             audit_topic=audit_topic,
             grid_relay_entity=grid_relay,
             notify_service=notify_service,
+            grid_voltage_entities=tuple(raw_voltage),
             enable_morning_dip=enable_dip,
             manage_floors=manage,
             floor=FloorParams(
