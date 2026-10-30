@@ -33,6 +33,7 @@ from .energy_core.ev_plan import (
     grid_charge_gate,
     plan_ev_intents,
 )
+from .energy_core.phase_guard import TRIP_A
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -240,6 +241,11 @@ class EvShadow:
             if guard is not None:
                 # measurements gone stale: no raising of the load, so the ceiling is unknown
                 cap_a = None if guard.get("stale") else guard["ev_current_cap_a"]
+                if cap_a is not None and (guard.get("import_a") or 0.0) > TRIP_A:
+                    # over the trip level the load may only go down, never up
+                    now_a = [v for v in (facts.intensity_a, facts.max_intensity_a)
+                             if v is not None]
+                    cap_a = min([cap_a, *now_a]) if now_a else None
             else:  # a configured guard that has not reported leaves the ceiling unknown
                 cap_a = None if cfg.phase_current_entities else cfg.guard_ev_cap_a
             intents, withheld = plan_ev_intents(

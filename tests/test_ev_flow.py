@@ -618,3 +618,29 @@ async def test_an_absent_car_or_a_protection_hold_without_a_level_too(hass):
     assert shadow.evaluate(NOW, None, True)["state"] == "away"
     _car(hass, soc="nan")
     assert shadow.evaluate(NOW, {"ev_paused": True}, True)["state"] == "curtailed"
+
+
+async def test_over_the_trip_level_the_plan_may_lower_the_load_but_never_raise_it(hass):
+    _car(hass, soc="60")
+    _calendar(hass, [])
+    _wallbox(hass, paused="off", intensity="6", maxi="16", dynamic="off")
+    shadow = EvShadow(hass, _wallbox_config())
+    await shadow.async_refresh_calendar(NOW)
+    guard = {"stale": False, "ev_paused": False, "ev_current_cap_a": 16.0, "import_a": 23.0}
+    over = shadow.evaluate(NOW, guard, True, force=True)
+    assert all(i["target"] != "intensity" or i["value"] <= 6.0 for i in over["intents"])
+    assert all(i["target"] != "max_intensity" or i["value"] <= 6.0 for i in over["intents"])
+    ok = shadow.evaluate(NOW, {**guard, "import_a": 12.0}, True, force=True)
+    assert ("intensity", 16.0) in {(i["target"], i["value"]) for i in ok["intents"]}
+
+
+async def test_over_the_trip_level_the_ceiling_still_comes_down_with_the_guard(hass):
+    _car(hass, soc="60")
+    _calendar(hass, [])
+    _wallbox(hass, paused="off", intensity="16", maxi="16", dynamic="off")
+    shadow = EvShadow(hass, _wallbox_config())
+    await shadow.async_refresh_calendar(NOW)
+    guard = {"stale": False, "ev_paused": False, "ev_current_cap_a": 10.0, "import_a": 23.0}
+    report = shadow.evaluate(NOW, guard, True, force=True)
+    steps = [(i["target"], i["value"]) for i in report["intents"]]
+    assert steps == [("intensity", 10.0), ("max_intensity", 10.0)]
