@@ -95,8 +95,8 @@ class EvShadow:
         except (TypeError, ValueError):
             return None, seen
 
-    def evaluate(self, now: datetime, guard: dict | None, grid_present: bool | None
-                 ) -> dict[str, Any] | None:
+    def evaluate(self, now: datetime, guard: dict | None, grid_present: bool | None,
+                 force: bool = False) -> dict[str, Any] | None:
         """`None` when the EV report is not configured."""
         cfg = self.config
         if not self.enabled:
@@ -145,9 +145,14 @@ class EvShadow:
                 soc_pct=soc, mobility_min_pct=cfg.ev_mobility_min_pct,
                 trip_pct_per_day=cfg.ev_daily_trip_pct),
             pv_charge_eligible=False,
-            deferred_eligible=True)
+            deferred_eligible=True,
+            force_charge=force)
         report["state"] = decision.state
         report["effective_target_pct"] = decision.effective_target_pct
+        report["force_requested"] = force
+        if decision.state == "force_charge":
+            cap = guard["ev_current_cap_a"] if guard else cfg.guard_ev_cap_a
+            report |= {"tariff_ignored": True, "power": "max", "max_current_a": cap}
         if request is not None:
             energy, hours, feasible = deadline_feasibility(
                 now=now, deadline_at=request.deadline_at, soc_pct=soc,

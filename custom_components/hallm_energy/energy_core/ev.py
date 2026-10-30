@@ -16,6 +16,7 @@ from typing import Literal
 EvState = Literal[
     "away",
     "idle",
+    "force_charge",
     "deferred",
     "pv_charge",
     "mobility_floor",
@@ -137,21 +138,26 @@ def ev_state(
     mobility_floor_needed: bool,
     pv_charge_eligible: bool,
     deferred_eligible: bool,
+    force_charge: bool = False,
 ) -> EvDecision:
-    """Priority order: curtailed, then deadline / battery assist, then mobility floor, then
-    charging from surplus, then deferred, then idle; away when the car is not connected at home.
+    """Priority order: curtailed, a forced charge, deadline / battery assist, mobility floor,
+    charging from surplus, deferred, idle; away when the car is not connected at home.
 
     A deadline needs an unmet target, which this function checks itself rather than trusting
     `deadline_active`: a finished request must not hold battery assist forever. Battery assist
     also needs the deadline to be in the future and within `ev_assist_h`: an expired deadline
     never justifies discharging the house battery. A reached target blocks every charging state
-    regardless of the eligibility flags. The minimum dwell time of a state is the caller's
+    regardless of the eligibility flags. A forced charge (a person's explicit wish: charge now,
+    whatever the tariff, at full power) outranks everything except the protections (`curtailed`)
+    and stops once the target is reached. The minimum dwell time of a state is the caller's
     business (hysteresis on top of this decision)."""
     if not connected_at_home:
         return EvDecision("away", effective_target_pct)
     if curtailed:
         return EvDecision("curtailed", effective_target_pct)
     target_reached = soc_pct >= effective_target_pct
+    if force_charge and not target_reached:
+        return EvDecision("force_charge", effective_target_pct)
     if deadline_active and not target_reached:
         assist_window = (
             battery_assist_eligible

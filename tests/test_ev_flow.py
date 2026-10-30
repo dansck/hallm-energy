@@ -204,3 +204,83 @@ async def test_the_tick_reports_the_ev_state_and_writes_no_wallbox_entity(storag
     assert controller.ev_report["state"] == "mobility_floor"
     assert not [w for w in status.writes if "wallbox" in w.op.entity_id]
     assert heard
+
+
+# --- "must charge" ---------------------------------------------------------------------------
+
+
+async def test_the_force_wish_makes_a_forced_charge_at_full_power_regardless_of_tariff(hass):
+    _car(hass, soc="60")
+    _calendar(hass, [])
+    shadow = EvShadow(hass, _ev_config())
+    await shadow.async_refresh_calendar(NOW)
+    assert shadow.evaluate(NOW, None, True)["state"] == "deferred"
+    report = shadow.evaluate(NOW, None, True, force=True)
+    assert report["state"] == "force_charge" and report["force_requested"] is True
+    assert report["tariff_ignored"] is True and report["power"] == "max"
+    assert report["max_current_a"] == 16.0
+
+
+async def test_the_forced_charge_current_follows_the_guard_cap(hass):
+    _car(hass, soc="60")
+    _calendar(hass, [])
+    shadow = EvShadow(hass, _ev_config())
+    await shadow.async_refresh_calendar(NOW)
+    report = shadow.evaluate(NOW, {"ev_paused": False, "ev_current_cap_a": 12.0}, True, force=True)
+    assert report["state"] == "force_charge" and report["max_current_a"] == 12.0
+    report = shadow.evaluate(NOW, {"ev_paused": True, "ev_current_cap_a": 6.0}, True, force=True)
+    assert report["state"] == "curtailed"
+
+
+@pytest.mark.parametrize("expected_lingering_timers", [True])
+async def test_the_switch_exists_only_with_the_car_configured_and_drives_the_report(
+        storage_hass, mqtt_mock):
+    from pytest_homeassistant_custom_component.common import MockConfigEntry
+
+    from custom_components.hallm_energy.const import DOMAIN
+
+    hass = storage_hass
+    hass.states.async_set("input_boolean.shadow", "on")
+    hass.states.async_set("input_boolean.grid_recovery", "on")
+    FakeInverter(hass)
+    set_telemetry(hass, soc="50.0")
+    _car(hass, soc="60")
+    _calendar(hass, [])
+    entry = MockConfigEntry(domain=DOMAIN, options={
+        **OPTIONS, "ev_soc_entity": SOC, "ev_connected_entity": PLUG})
+    entry.add_to_hass(hass)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done(wait_background_tasks=True)
+    switch = next(s for s in hass.states.async_all("switch")
+                  if s.entity_id.endswith("ev_must_charge"))
+    assert switch.state == "off"
+    await hass.services.async_call("switch", "turn_on", {"entity_id": switch.entity_id},
+                                   blocking=True)
+    controller = entry.runtime_data.controller
+    assert controller.ev_force is True
+    assert controller.ev_report["state"] == "force_charge"
+    assert hass.states.get(switch.entity_id).state == "on"
+    await hass.services.async_call("switch", "turn_off", {"entity_id": switch.entity_id},
+                                   blocking=True)
+    assert controller.ev_force is False and controller.ev_report["state"] == "deferred"
+    assert await hass.config_entries.async_unload(entry.entry_id)
+
+
+@pytest.mark.parametrize("expected_lingering_timers", [True])
+async def test_there_is_no_switch_without_the_car(storage_hass, mqtt_mock):
+    from pytest_homeassistant_custom_component.common import MockConfigEntry
+
+    from custom_components.hallm_energy.const import DOMAIN
+
+    hass = storage_hass
+    hass.states.async_set("input_boolean.shadow", "on")
+    hass.states.async_set("input_boolean.grid_recovery", "on")
+    FakeInverter(hass)
+    set_telemetry(hass, soc="50.0")
+    entry = MockConfigEntry(domain=DOMAIN, options=dict(OPTIONS))
+    entry.add_to_hass(hass)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done(wait_background_tasks=True)
+    names = [s.entity_id for s in hass.states.async_all("switch")]
+    assert not [n for n in names if n.endswith("ev_must_charge")]
+    assert await hass.config_entries.async_unload(entry.entry_id)

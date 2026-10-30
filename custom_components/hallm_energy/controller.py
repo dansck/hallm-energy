@@ -115,6 +115,7 @@ class EnergyController:
         self._guard_failing = False
         self.ev = EvShadow(hass, config)
         self.ev_report: dict | None = None  # report only: nothing is written
+        self.ev_force = False  # "must charge": set by a switch, restored by it after a restart
         self.profiles = ProfileReceiver()
         self.pv_forecasts = PvForecastReceiver()
         self.outbox = AuditOutbox(runtime, config.audit_topic, _mqtt_publisher(hass))
@@ -173,13 +174,20 @@ class EnergyController:
         if changed:
             self._notify()
 
+    async def async_set_ev_force(self, on: bool) -> None:
+        """The "must charge" wish. The report follows at once, not on the next tick."""
+        self.ev_force = on
+        await self._observe_ev(dt_util.utcnow())
+        self._notify()
+
     async def _observe_ev(self, now: datetime) -> None:
         """The EV report: outside the control lock too (a slow calendar never delays a cycle)."""
         if not self.ev.enabled:
             return
         try:
             await self.ev.async_refresh_calendar(now)
-            report = self.ev.evaluate(now, self.guard_report, self._grid_present())
+            report = self.ev.evaluate(now, self.guard_report, self._grid_present(),
+                                      self.ev_force)
         except Exception:
             _LOGGER.exception("EV report failed")
             return
@@ -533,7 +541,7 @@ def _ev_decision(report: dict | None) -> tuple | None:
         return None
     request = report.get("request") or {}
     return (report["state"], report["reason"], report.get("effective_target_pct"),
-            request.get("deadline_at"), request.get("feasible"))
+            request.get("deadline_at"), request.get("feasible"), report.get("force_requested"))
 
 
 def _local_outlook(now: datetime, days: int) -> tuple[datetime, datetime]:
