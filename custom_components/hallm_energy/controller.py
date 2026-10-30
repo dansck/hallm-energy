@@ -33,6 +33,7 @@ from .audit_outbox import AuditOutbox
 from .config import EnergyConfig
 from .const import POLICY_VERSION
 from .device_io import DeviceIO, WriteResult
+from .ev_flow import EvShadow
 from .executor import Gates, GrantExecutor, Snapshot
 from .floor_table import FloorContext, FloorPlan, floor_plan, hold_floor_pct
 from .guard_flow import GuardShadow
@@ -112,6 +113,8 @@ class EnergyController:
         self.guard = GuardShadow(config)
         self.guard_report: dict | None = None  # report only: nothing is written
         self._guard_failing = False
+        self.ev = EvShadow(hass, config)
+        self.ev_report: dict | None = None  # report only: nothing is written
         self.profiles = ProfileReceiver()
         self.pv_forecasts = PvForecastReceiver()
         self.outbox = AuditOutbox(runtime, config.audit_topic, _mqtt_publisher(hass))
@@ -150,6 +153,7 @@ class EnergyController:
             self.status = status
             self._notify()
         await self._observe_conditions(status)  # outside the control lock: never delays a cycle
+        await self._observe_ev(now)
         return status
 
     def guard_step(self, now: datetime | None = None) -> None:
@@ -166,6 +170,21 @@ class EnergyController:
         self._guard_failing = False
         changed = _guard_decision(report) != _guard_decision(self.guard_report)
         self.guard_report = report
+        if changed:
+            self._notify()
+
+    async def _observe_ev(self, now: datetime) -> None:
+        """The EV report: outside the control lock too (a slow calendar never delays a cycle)."""
+        if not self.ev.enabled:
+            return
+        try:
+            await self.ev.async_refresh_calendar(now)
+            report = self.ev.evaluate(now, self.guard_report, self._grid_present())
+        except Exception:
+            _LOGGER.exception("EV report failed")
+            return
+        changed = _ev_decision(report) != _ev_decision(self.ev_report)
+        self.ev_report = report
         if changed:
             self._notify()
 
@@ -507,6 +526,14 @@ def _guard_decision(report: dict | None) -> tuple | None:
         return None
     return (report["ev_current_cap_a"], report["ev_paused"], report["grid_charge_allowed"],
             report["export_cap_w"], report["restricted"])
+
+
+def _ev_decision(report: dict | None) -> tuple | None:
+    if report is None:
+        return None
+    request = report.get("request") or {}
+    return (report["state"], report["reason"], report.get("effective_target_pct"),
+            request.get("deadline_at"), request.get("feasible"))
 
 
 def _local_outlook(now: datetime, days: int) -> tuple[datetime, datetime]:

@@ -37,6 +37,15 @@ CONF_NOTIFY_SERVICE = "notify_service"
 CONF_GRID_VOLTAGE = "grid_voltage_entities"
 CONF_PHASE_CURRENTS = "phase_current_entities"
 CONF_PHASE_POWERS = "phase_power_entities"
+CONF_EV_SOC = "ev_soc_entity"
+CONF_EV_CONNECTED = "ev_connected_entity"
+CONF_EV_TRACKER = "ev_tracker_entity"
+CONF_EV_CALENDAR = "ev_calendar_entity"
+CONF_EV_BATTERY = "ev_battery_kwh"
+CONF_EV_TRIPS = "ev_daily_trip_pct"
+CONF_EV_MOBILITY_MIN = "ev_mobility_min_pct"
+CONF_EV_DEFAULT_TARGET = "ev_default_target_pct"
+CONF_EV_MAX_POWER = "ev_max_power_kw"
 CONF_GUARD_EV_CAP = "guard_ev_cap_a"
 CONF_GUARD_EXPORT_CAP = "guard_export_cap_w"
 CONF_ENABLE_MORNING_DIP = "enable_morning_dip"
@@ -73,6 +82,11 @@ NUMBER_OPTIONS: dict[str, tuple[float, float, float]] = {
     CONF_DIP_H: (3.0, 0.0, 4.0),
     CONF_REFILL_MARGIN: (30.0, 0.0, 120.0),
     CONF_GUARD_EV_CAP: (16.0, 6.0, 32.0),
+    CONF_EV_BATTERY: (77.0, 20.0, 150.0),
+    CONF_EV_TRIPS: (10.0, 0.0, 50.0),
+    CONF_EV_MOBILITY_MIN: (30.0, 10.0, 60.0),
+    CONF_EV_DEFAULT_TARGET: (80.0, 50.0, 100.0),
+    CONF_EV_MAX_POWER: (11.04, 1.4, 22.0),
     CONF_GUARD_EXPORT_CAP: (8000.0, 0.0, 8800.0),
 }
 
@@ -98,6 +112,13 @@ ENTITY_KEYS = SINGLE_KEYS + SLOT_KEYS
 
 class ConfigInvalidError(ValueError):
     pass
+
+
+def _optional_entity(options: Mapping[str, Any], key: str, domain: str) -> str | None:
+    value = options.get(key) or None
+    if value is not None and (not isinstance(value, str) or not value.startswith(f"{domain}.")):
+        raise ConfigInvalidError(f"{key}: expected a {domain} entity")
+    return value
 
 
 def _sensor_list(options: Mapping[str, Any], key: str) -> tuple[str, ...]:
@@ -129,6 +150,15 @@ class EnergyConfig:
     phase_current_entities: tuple[str, ...] = ()
     phase_power_entities: tuple[str, ...] = ()
     guard_ev_cap_a: float = NUMBER_OPTIONS[CONF_GUARD_EV_CAP][0]
+    ev_soc_entity: str | None = None
+    ev_connected_entity: str | None = None
+    ev_tracker_entity: str | None = None
+    ev_calendar_entity: str | None = None
+    ev_battery_kwh: float = NUMBER_OPTIONS[CONF_EV_BATTERY][0]
+    ev_daily_trip_pct: float = NUMBER_OPTIONS[CONF_EV_TRIPS][0]
+    ev_mobility_min_pct: float = NUMBER_OPTIONS[CONF_EV_MOBILITY_MIN][0]
+    ev_default_target_pct: float = NUMBER_OPTIONS[CONF_EV_DEFAULT_TARGET][0]
+    ev_max_power_kw: float = NUMBER_OPTIONS[CONF_EV_MAX_POWER][0]
     guard_export_cap_w: float = NUMBER_OPTIONS[CONF_GUARD_EXPORT_CAP][0]
     enable_morning_dip: bool = False
     manage_floors: bool = False
@@ -210,6 +240,13 @@ class EnergyConfig:
         if len(phase_currents) != len(phase_powers):
             raise ConfigInvalidError(
                 "phase current and phase power sensors must be given together, one per phase")
+        ev = {key: _optional_entity(options, key, domain) for key, domain in (
+            (CONF_EV_SOC, "sensor"), (CONF_EV_CONNECTED, "binary_sensor"),
+            (CONF_EV_TRACKER, "device_tracker"), (CONF_EV_CALENDAR, "calendar"))}
+        if (ev[CONF_EV_SOC] is None) != (ev[CONF_EV_CONNECTED] is None):
+            raise ConfigInvalidError("EV: the SOC sensor and the connected sensor go together")
+        if numbers[CONF_EV_MOBILITY_MIN] >= numbers[CONF_EV_DEFAULT_TARGET]:
+            raise ConfigInvalidError("EV: mobility minimum must be below the default target")
         notify_service = options.get(CONF_NOTIFY_SERVICE) or None
         if notify_service is not None and (
                 not isinstance(notify_service, str)
@@ -236,6 +273,15 @@ class EnergyConfig:
             phase_current_entities=phase_currents,
             phase_power_entities=phase_powers,
             guard_ev_cap_a=numbers[CONF_GUARD_EV_CAP],
+            ev_soc_entity=ev[CONF_EV_SOC],
+            ev_connected_entity=ev[CONF_EV_CONNECTED],
+            ev_tracker_entity=ev[CONF_EV_TRACKER],
+            ev_calendar_entity=ev[CONF_EV_CALENDAR],
+            ev_battery_kwh=numbers[CONF_EV_BATTERY],
+            ev_daily_trip_pct=numbers[CONF_EV_TRIPS],
+            ev_mobility_min_pct=numbers[CONF_EV_MOBILITY_MIN],
+            ev_default_target_pct=numbers[CONF_EV_DEFAULT_TARGET],
+            ev_max_power_kw=numbers[CONF_EV_MAX_POWER],
             guard_export_cap_w=numbers[CONF_GUARD_EXPORT_CAP],
             enable_morning_dip=enable_dip,
             manage_floors=manage,

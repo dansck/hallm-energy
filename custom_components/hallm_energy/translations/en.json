@@ -56,7 +56,16 @@
           "phase_current_entities": "Phase current sensors (RMS, one per phase)",
           "phase_power_entities": "Phase active power sensors (one per phase, + import / - export)",
           "guard_ev_cap_a": "Phase guard: normal EV current cap (A)",
-          "guard_export_cap_w": "Phase guard: normal export cap (W)"
+          "guard_export_cap_w": "Phase guard: normal export cap (W)",
+          "ev_soc_entity": "EV battery level sensor (%)",
+          "ev_connected_entity": "EV connected to the wallbox",
+          "ev_tracker_entity": "EV location (device tracker, optional)",
+          "ev_calendar_entity": "EV charge requests calendar (optional)",
+          "ev_battery_kwh": "EV battery capacity (kWh)",
+          "ev_daily_trip_pct": "EV usual trips (% of battery per day)",
+          "ev_mobility_min_pct": "EV protective minimum (%)",
+          "ev_default_target_pct": "EV default charge target (%)",
+          "ev_max_power_kw": "EV wallbox maximum power (kW)"
         },
         "data_description": {
           "soc_entity": "Sensor with the battery state of charge (%).",
@@ -110,7 +119,16 @@
           "phase_current_entities": "Phase guard (report only, nothing is written): RMS current per phase, in the same order as the power sensors. Leave both lists empty to disable.",
           "phase_power_entities": "Phase guard: active power per phase (+ import / - export), same order as the currents.",
           "guard_ev_cap_a": "Level the EV current cap returns to when the guard releases.",
-          "guard_export_cap_w": "Level the export cap returns to when the guard releases."
+          "guard_export_cap_w": "Level the export cap returns to when the guard releases.",
+          "ev_soc_entity": "EV state (report only, nothing is written): the car battery level. Give it together with the connected sensor; leave both empty to disable.",
+          "ev_connected_entity": "Binary sensor that is on while the car is plugged in.",
+          "ev_tracker_entity": "When given, the car counts as available only while this tracker says home.",
+          "ev_calendar_entity": "An event titled \"EV 80\", \"EV 100\" or \"EV plno\" (full) asks for that charge level by the event start. \"EV\" alone means the default target.",
+          "ev_battery_kwh": "Usable capacity, used to estimate the energy a request needs.",
+          "ev_daily_trip_pct": "Typical battery use per day for routine trips.",
+          "ev_mobility_min_pct": "Never let routine charging wait below this level plus the usual trips.",
+          "ev_default_target_pct": "The target when there is no request.",
+          "ev_max_power_kw": "Highest charging power of the wallbox, for the feasibility check."
         }
       }
     },
@@ -178,7 +196,16 @@
           "phase_current_entities": "Phase current sensors (RMS, one per phase)",
           "phase_power_entities": "Phase active power sensors (one per phase, + import / - export)",
           "guard_ev_cap_a": "Phase guard: normal EV current cap (A)",
-          "guard_export_cap_w": "Phase guard: normal export cap (W)"
+          "guard_export_cap_w": "Phase guard: normal export cap (W)",
+          "ev_soc_entity": "EV battery level sensor (%)",
+          "ev_connected_entity": "EV connected to the wallbox",
+          "ev_tracker_entity": "EV location (device tracker, optional)",
+          "ev_calendar_entity": "EV charge requests calendar (optional)",
+          "ev_battery_kwh": "EV battery capacity (kWh)",
+          "ev_daily_trip_pct": "EV usual trips (% of battery per day)",
+          "ev_mobility_min_pct": "EV protective minimum (%)",
+          "ev_default_target_pct": "EV default charge target (%)",
+          "ev_max_power_kw": "EV wallbox maximum power (kW)"
         },
         "data_description": {
           "soc_entity": "Sensor with the battery state of charge (%).",
@@ -232,7 +259,16 @@
           "phase_current_entities": "Phase guard (report only, nothing is written): RMS current per phase, in the same order as the power sensors. Leave both lists empty to disable.",
           "phase_power_entities": "Phase guard: active power per phase (+ import / - export), same order as the currents.",
           "guard_ev_cap_a": "Level the EV current cap returns to when the guard releases.",
-          "guard_export_cap_w": "Level the export cap returns to when the guard releases."
+          "guard_export_cap_w": "Level the export cap returns to when the guard releases.",
+          "ev_soc_entity": "EV state (report only, nothing is written): the car battery level. Give it together with the connected sensor; leave both empty to disable.",
+          "ev_connected_entity": "Binary sensor that is on while the car is plugged in.",
+          "ev_tracker_entity": "When given, the car counts as available only while this tracker says home.",
+          "ev_calendar_entity": "An event titled \"EV 80\", \"EV 100\" or \"EV plno\" (full) asks for that charge level by the event start. \"EV\" alone means the default target.",
+          "ev_battery_kwh": "Usable capacity, used to estimate the energy a request needs.",
+          "ev_daily_trip_pct": "Typical battery use per day for routine trips.",
+          "ev_mobility_min_pct": "Never let routine charging wait below this level plus the usual trips.",
+          "ev_default_target_pct": "The target when there is no request.",
+          "ev_max_power_kw": "Highest charging power of the wallbox, for the feasibility check."
         }
       }
     },

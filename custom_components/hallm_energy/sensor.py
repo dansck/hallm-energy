@@ -121,6 +121,7 @@ class StatusSensor(SensorEntity):
                 else tick.morning.t_pv_end.isoformat(),
                 "floors": tick.floors,
                 "phase_guard": controller.guard_report,
+                "ev": controller.ev_report,
                 "recovery_action": None if tick.recovery is None else tick.recovery.action,
                 "recovery_action_reason": None if tick.recovery is None
                 else tick.recovery.reason,
