@@ -374,13 +374,17 @@ def test_the_wallbox_entities_are_checked_for_their_kind():
 
 
 @pytest.mark.parametrize("raw", ["nan", "inf", "-inf", "-5", "100.5", "101"])
-async def test_an_invalid_soc_never_authorises_a_forced_charge(hass, raw):
+async def test_an_invalid_soc_is_only_a_missing_input_it_neither_stops_nor_starts_charging(
+        hass, raw):
     _car(hass, soc=raw)
     _calendar(hass, [])
     shadow = EvShadow(hass, _ev_config())
     await shadow.async_refresh_calendar(NOW)
-    report = shadow.evaluate(NOW, None, True, force=True)
-    assert report["state"] is None and report["reason"] in ("soc_invalid", "soc_unavailable")
+    forced = shadow.evaluate(NOW, None, True, force=True)
+    assert forced["state"] == "force_charge" and forced["soc_reason"] in (
+        "soc_invalid", "soc_unavailable")
+    idle = shadow.evaluate(NOW, None, True)
+    assert idle["state"] is None and idle["reason"] in ("soc_invalid", "soc_unavailable")
 
 
 @pytest.mark.parametrize(("raw", "state"), [("0", "force_charge"), ("100", "idle")])
@@ -415,18 +419,21 @@ async def test_the_age_of_the_soc_is_the_cars_own_reading_time_not_the_ha_report
 @pytest.mark.parametrize(("value", "reason"), [
     ("unavailable", "soc_time_unknown"), ("not a time", "soc_time_unknown"),
 ])
-async def test_an_unusable_reading_time_gives_no_decision(hass, value, reason):
+async def test_an_unusable_reading_time_makes_the_level_unknown_not_a_stop(hass, value, reason):
     _car(hass, soc="60")
     hass.states.async_set(UPDATED, value)
-    report = EvShadow(hass, _updated_config()).evaluate(NOW, None, True, force=True)
-    assert report["state"] is None and report["reason"] == reason
+    shadow = EvShadow(hass, _updated_config())
+    assert shadow.evaluate(NOW, None, True)["reason"] == reason
+    forced = shadow.evaluate(NOW, None, True, force=True)
+    assert forced["state"] == "force_charge" and forced["soc_reason"] == reason
 
 
-async def test_a_reading_time_from_the_future_does_not_authorise_charging(hass):
+async def test_a_reading_time_from_the_future_makes_the_level_unknown(hass):
     _car(hass, soc="60")
     hass.states.async_set(UPDATED, (NOW + timedelta(hours=3)).isoformat())
-    report = EvShadow(hass, _updated_config()).evaluate(NOW, None, True, force=True)
-    assert report["state"] is None and report["reason"] == "soc_time_invalid"
+    shadow = EvShadow(hass, _updated_config())
+    assert shadow.evaluate(NOW, None, True)["reason"] == "soc_time_invalid"
+    assert shadow.evaluate(NOW, None, True, force=True)["state"] == "force_charge"
 
 
 async def test_a_non_finite_wallbox_value_counts_as_unknown(hass):
@@ -573,3 +580,41 @@ def test_the_peak_permission_is_a_boolean_option():
         {**OPTIONS, "ev_deadline_allow_peak": False}).ev_deadline_allow_peak is False
     with pytest.raises(ConfigInvalidError):
         EnergyConfig.from_options({**OPTIONS, "ev_deadline_allow_peak": "yes"})
+
+
+# --- the level is an input to calculations only ----------------------------------------------
+
+
+async def test_without_a_level_a_request_still_charges_in_off_peak_and_waits_in_peak(hass):
+    _car(hass, soc="unavailable")
+    start = (NOW + timedelta(hours=6)).isoformat()
+    _calendar(hass, [{"start": start, "end": start, "summary": "EV 100"}])
+    _wallbox(hass, paused="on", intensity="16", dynamic="off")
+    shadow = EvShadow(hass, _wallbox_config())
+    await shadow.async_refresh_calendar(NOW)
+    night = shadow.evaluate(NOW, None, True, tariff=lambda d: TariffFacts(True, 5.0, True))
+    assert night["state"] == "deadline" and night["soc_reason"] == "soc_unavailable"
+    assert "energy_needed_kwh" not in night["request"]
+    assert [(i["target"], i["value"]) for i in night["intents"]] == [("pause", False)]
+    day = shadow.evaluate(NOW, None, True, tariff=lambda d: TariffFacts(False, 5.0, True))
+    assert day["intents"] == [] and "unknown" in day["intents_withheld"]
+
+
+async def test_without_a_level_and_without_a_reason_to_charge_nothing_changes(hass):
+    _car(hass, soc="nan")
+    _calendar(hass, [])
+    _wallbox(hass, paused="off", intensity="16", dynamic="off")
+    shadow = EvShadow(hass, _wallbox_config())
+    await shadow.async_refresh_calendar(NOW)
+    report = shadow.evaluate(NOW, None, True, tariff=lambda d: TariffFacts(False, None, False))
+    assert report["state"] is None and "intents" not in report  # a running charge is left alone
+
+
+async def test_an_absent_car_or_a_protection_hold_without_a_level_too(hass):
+    _car(hass, soc="nan", plugged="off")
+    _calendar(hass, [])
+    shadow = EvShadow(hass, _ev_config())
+    await shadow.async_refresh_calendar(NOW)
+    assert shadow.evaluate(NOW, None, True)["state"] == "away"
+    _car(hass, soc="nan")
+    assert shadow.evaluate(NOW, {"ev_paused": True}, True)["state"] == "curtailed"

@@ -125,6 +125,29 @@ def deadline_feasibility(
     return energy_kwh, hours_needed, hours_needed <= hours_left
 
 
+def ev_state_unknown_soc(
+    *,
+    connected_at_home: bool,
+    effective_target_pct: float,
+    curtailed: bool,
+    deadline_active: bool,
+    force_charge: bool,
+) -> EvDecision | None:
+    """The battery level is only an input to calculations (target reached, energy needed); it is
+    never a reason to charge or to stop. Without it the states that do not depend on it still
+    hold: away, curtailed, a forced charge and a request with a deadline. Everything else needs
+    the level, so there is no decision (`None`) and nothing is changed."""
+    if not connected_at_home:
+        return EvDecision("away", effective_target_pct)
+    if curtailed:
+        return EvDecision("curtailed", effective_target_pct)
+    if force_charge:
+        return EvDecision("force_charge", effective_target_pct)
+    if deadline_active:
+        return EvDecision("deadline", effective_target_pct)
+    return None
+
+
 def ev_state(
     *,
     connected_at_home: bool,

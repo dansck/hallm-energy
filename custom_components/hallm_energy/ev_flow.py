@@ -22,6 +22,7 @@ from .energy_core.ev import (
     deadline_feasibility,
     effective_ev_target_pct,
     ev_state,
+    ev_state_unknown_soc,
     mobility_floor_needed,
     next_request,
 )
@@ -120,6 +121,29 @@ class EvShadow:
             max_intensity_a=self._number(cfg.ev_wallbox_max_intensity_entity)[0],
             dynamic_on=flag(cfg.ev_wallbox_dynamic_entity))
 
+    def _soc(self, now: datetime, report: dict[str, Any]) -> tuple[float | None, str | None]:
+        """The battery level and why it cannot be used. It is an input to calculations only: an
+        unusable level never authorises or stops charging."""
+        cfg = self.config
+        soc, seen = self._number(cfg.ev_soc_entity)
+        if soc is None:
+            return None, "soc_unavailable"
+        if not 0.0 <= soc <= 100.0:
+            return None, "soc_invalid"
+        if cfg.ev_soc_updated_entity:  # the car's own reading time, not the Home Assistant report
+            stamp = self.hass.states.get(cfg.ev_soc_updated_entity)
+            seen = dt_util.parse_datetime(stamp.state) if stamp is not None else None
+            if seen is None:
+                return None, "soc_time_unknown"
+            seen = dt_util.as_utc(seen)
+        age = now - seen
+        report["soc_pct"], report["soc_age_min"] = soc, int(age.total_seconds() // 60)
+        if age < -CLOCK_SKEW:
+            return None, "soc_time_invalid"
+        if age > SOC_UNUSABLE_AFTER:
+            return None, "soc_stale"
+        return soc, None
+
     def evaluate(self, now: datetime, guard: dict | None, grid_present: bool | None,
                  force: bool = False,
                  tariff: Callable[[datetime | None], TariffFacts] | None = None
@@ -132,28 +156,8 @@ class EvShadow:
             "state": None, "reason": None, "calendar_error": self._calendar_error,
             "not_evaluated": ["pv_charge", "battery_assist"],
         }
-        soc, seen = self._number(cfg.ev_soc_entity)
-        if soc is None:
-            report["reason"] = "soc_unavailable"
-            return report
-        if not 0.0 <= soc <= 100.0:
-            report["reason"] = "soc_invalid"
-            return report
-        if cfg.ev_soc_updated_entity:  # the car's own reading time, not the Home Assistant report
-            stamp = self.hass.states.get(cfg.ev_soc_updated_entity)
-            seen = dt_util.parse_datetime(stamp.state) if stamp is not None else None
-            if seen is None:
-                report["reason"] = "soc_time_unknown"
-                return report
-            seen = dt_util.as_utc(seen)
-        age = now - seen
-        report["soc_pct"], report["soc_age_min"] = soc, int(age.total_seconds() // 60)
-        if age < -CLOCK_SKEW:
-            report["reason"] = "soc_time_invalid"
-            return report
-        if age > SOC_UNUSABLE_AFTER:
-            report["reason"] = "soc_stale"
-            return report
+        soc, soc_reason = self._soc(now, report)
+        report["soc_reason"] = soc_reason
 
         plugged = self.hass.states.get(cfg.ev_connected_entity)
         home = True
@@ -171,22 +175,30 @@ class EvShadow:
             calendar_target_pct=None,
             default_target_pct=cfg.ev_default_target_pct)
         curtailed = bool(guard and guard.get("ev_paused")) or grid_present is False
-        decision = ev_state(
-            connected_at_home=connected,
-            effective_target_pct=target,
-            soc_pct=soc,
-            curtailed=curtailed,
-            deadline_active=request is not None,
-            deadline_at=None if request is None else request.deadline_at,
-            now=now,
-            ev_assist_h=ASSIST_WINDOW_H,
-            battery_assist_eligible=False,
-            mobility_floor_needed=mobility_floor_needed(
-                soc_pct=soc, mobility_min_pct=cfg.ev_mobility_min_pct,
-                trip_pct_per_day=cfg.ev_daily_trip_pct),
-            pv_charge_eligible=False,
-            deferred_eligible=True,
-            force_charge=force)
+        if soc is None:
+            decision = ev_state_unknown_soc(
+                connected_at_home=connected, effective_target_pct=target, curtailed=curtailed,
+                deadline_active=request is not None, force_charge=force)
+            if decision is None:
+                report["reason"] = soc_reason
+                return report
+        else:
+            decision = ev_state(
+                connected_at_home=connected,
+                effective_target_pct=target,
+                soc_pct=soc,
+                curtailed=curtailed,
+                deadline_active=request is not None,
+                deadline_at=None if request is None else request.deadline_at,
+                now=now,
+                ev_assist_h=ASSIST_WINDOW_H,
+                battery_assist_eligible=False,
+                mobility_floor_needed=mobility_floor_needed(
+                    soc_pct=soc, mobility_min_pct=cfg.ev_mobility_min_pct,
+                    trip_pct_per_day=cfg.ev_daily_trip_pct),
+                pv_charge_eligible=False,
+                deferred_eligible=True,
+                force_charge=force)
         report["state"] = decision.state
         report["effective_target_pct"] = decision.effective_target_pct
         report["force_requested"] = force
@@ -195,15 +207,18 @@ class EvShadow:
             report |= {"tariff_ignored": True, "power": "max", "max_current_a": cap}
         hours_needed = None
         if request is not None:
-            energy, hours, feasible = deadline_feasibility(
-                now=now, deadline_at=request.deadline_at, soc_pct=soc,
-                target_pct=target, ac_kwh_per_pct=cfg.ev_ac_kwh_per_pct,
-                max_power_kw=cfg.ev_max_power_kw)
-            hours_needed = hours
             report["request"] = {
                 "title": request.title, "deadline_at": request.deadline_at.isoformat(),
-                "target_pct": target, "energy_needed_kwh": round(energy, 1),
-                "hours_needed_at_max": round(hours, 1), "feasible": feasible}
+                "target_pct": target}
+            if soc is not None:
+                energy, hours, feasible = deadline_feasibility(
+                    now=now, deadline_at=request.deadline_at, soc_pct=soc,
+                    target_pct=target, ac_kwh_per_pct=cfg.ev_ac_kwh_per_pct,
+                    max_power_kw=cfg.ev_max_power_kw)
+                hours_needed = hours
+                report["request"] |= {
+                    "energy_needed_kwh": round(energy, 1),
+                    "hours_needed_at_max": round(hours, 1), "feasible": feasible}
         facts_tariff = None
         if tariff is not None:
             facts_tariff = tariff(None if request is None else request.deadline_at)
