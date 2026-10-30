@@ -39,6 +39,7 @@ CONF_PHASE_CURRENTS = "phase_current_entities"
 CONF_PHASE_POWERS = "phase_power_entities"
 CONF_EV_SOC = "ev_soc_entity"
 CONF_EV_CONNECTED = "ev_connected_entity"
+CONF_EV_SOC_UPDATED = "ev_soc_updated_entity"
 CONF_EV_TRACKER = "ev_tracker_entity"
 CONF_EV_CALENDAR = "ev_calendar_entity"
 CONF_EV_PAUSE = "ev_wallbox_pause_entity"
@@ -156,6 +157,7 @@ class EnergyConfig:
     guard_ev_cap_a: float = NUMBER_OPTIONS[CONF_GUARD_EV_CAP][0]
     ev_soc_entity: str | None = None
     ev_connected_entity: str | None = None
+    ev_soc_updated_entity: str | None = None
     ev_tracker_entity: str | None = None
     ev_calendar_entity: str | None = None
     ev_wallbox_pause_entity: str | None = None
@@ -252,7 +254,8 @@ class EnergyConfig:
             (CONF_EV_SOC, "sensor"), (CONF_EV_CONNECTED, "binary_sensor"),
             (CONF_EV_TRACKER, "device_tracker"), (CONF_EV_CALENDAR, "calendar"),
             (CONF_EV_PAUSE, "switch"), (CONF_EV_INTENSITY, "number"),
-            (CONF_EV_MAX_INTENSITY, "number"), (CONF_EV_DYNAMIC, "switch"))}
+            (CONF_EV_MAX_INTENSITY, "number"), (CONF_EV_DYNAMIC, "switch"),
+            (CONF_EV_SOC_UPDATED, "sensor"))}
         if (ev[CONF_EV_SOC] is None) != (ev[CONF_EV_CONNECTED] is None):
             raise ConfigInvalidError("EV: the SOC sensor and the connected sensor go together")
         if numbers[CONF_EV_MOBILITY_MIN] >= numbers[CONF_EV_DEFAULT_TARGET]:
@@ -285,6 +288,7 @@ class EnergyConfig:
             guard_ev_cap_a=numbers[CONF_GUARD_EV_CAP],
             ev_soc_entity=ev[CONF_EV_SOC],
             ev_connected_entity=ev[CONF_EV_CONNECTED],
+            ev_soc_updated_entity=ev[CONF_EV_SOC_UPDATED],
             ev_tracker_entity=ev[CONF_EV_TRACKER],
             ev_calendar_entity=ev[CONF_EV_CALENDAR],
             ev_wallbox_pause_entity=ev[CONF_EV_PAUSE],

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
 from datetime import date, datetime, timedelta
 from typing import Any
 
@@ -31,6 +32,7 @@ CALENDAR_REFRESH = timedelta(minutes=5)
 CALENDAR_HORIZON = timedelta(days=14)
 CALENDAR_TIMEOUT_S = 10.0
 SOC_UNUSABLE_AFTER = timedelta(hours=24)
+CLOCK_SKEW = timedelta(minutes=5)  # a reading from the future beyond this is not believed
 ASSIST_WINDOW_H = 3.0
 
 
@@ -91,9 +93,10 @@ class EvShadow:
             return None, None
         seen = max(state.last_updated, getattr(state, "last_reported", state.last_updated))
         try:
-            return float(state.state), seen
+            value = float(state.state)
         except (TypeError, ValueError):
             return None, seen
+        return (value, seen) if math.isfinite(value) else (None, seen)
 
     def _wallbox_facts(self) -> WallboxFacts:
         cfg, states = self.config, self.hass.states
@@ -124,8 +127,21 @@ class EvShadow:
         if soc is None:
             report["reason"] = "soc_unavailable"
             return report
+        if not 0.0 <= soc <= 100.0:
+            report["reason"] = "soc_invalid"
+            return report
+        if cfg.ev_soc_updated_entity:  # the car's own reading time, not the Home Assistant report
+            stamp = self.hass.states.get(cfg.ev_soc_updated_entity)
+            seen = dt_util.parse_datetime(stamp.state) if stamp is not None else None
+            if seen is None:
+                report["reason"] = "soc_time_unknown"
+                return report
+            seen = dt_util.as_utc(seen)
         age = now - seen
         report["soc_pct"], report["soc_age_min"] = soc, int(age.total_seconds() // 60)
+        if age < -CLOCK_SKEW:
+            report["reason"] = "soc_time_invalid"
+            return report
         if age > SOC_UNUSABLE_AFTER:
             report["reason"] = "soc_stale"
             return report
@@ -170,15 +186,18 @@ class EvShadow:
             report |= {"tariff_ignored": True, "power": "max", "max_current_a": cap}
         if cfg.ev_wallbox_pause_entity:
             facts = self._wallbox_facts()
-            intents, withheld = plan_ev_intents(
-                decision.state, wallbox=facts,
-                cap_a=guard["ev_current_cap_a"] if guard else cfg.guard_ev_cap_a)
+            if guard is not None:
+                cap_a = guard["ev_current_cap_a"]
+            else:  # a configured guard that has not reported leaves the ceiling unknown
+                cap_a = None if cfg.phase_current_entities else cfg.guard_ev_cap_a
+            intents, withheld = plan_ev_intents(decision.state, wallbox=facts, cap_a=cap_a)
             report["wallbox"] = {
                 "paused": facts.paused, "intensity_a": facts.intensity_a,
                 "max_intensity_a": facts.max_intensity_a, "dynamic_on": facts.dynamic_on,
                 "min_power_kw": round(MIN_POWER_KW, 2)}
-            report["intents"] = [{"target": i.target, "value": i.value, "reason": i.reason}
-                                 for i in intents]
+            report["intents"] = [
+                {"target": i.target, "value": i.value, "reason": i.reason, "phase": i.phase}
+                for i in intents]
             report["intents_withheld"] = withheld
         if request is not None:
             energy, hours, feasible = deadline_feasibility(

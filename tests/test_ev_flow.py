@@ -18,6 +18,11 @@ SOC, PLUG, HOME, CAL = ("sensor.car_soc", "binary_sensor.car_plug", "device_trac
                         "calendar.requests")
 
 
+@pytest.fixture(autouse=True)
+def _clock(freezer):
+    freezer.move_to(NOW)
+
+
 def _ev_config(**over):
     return replace(CONFIG, ev_soc_entity=SOC, ev_connected_entity=PLUG,
                    ev_tracker_entity=HOME, ev_calendar_entity=CAL, **over)
@@ -363,3 +368,95 @@ def test_the_wallbox_entities_are_checked_for_their_kind():
                                      "ev_wallbox_pause_entity": PAUSE,
                                      "ev_wallbox_intensity_entity": INTENSITY})
     assert cfg.ev_wallbox_pause_entity == PAUSE and cfg.ev_wallbox_dynamic_entity is None
+
+
+# --- invalid and untrustworthy readings (review 40) --------------------------------------------
+
+
+@pytest.mark.parametrize("raw", ["nan", "inf", "-inf", "-5", "100.5", "101"])
+async def test_an_invalid_soc_never_authorises_a_forced_charge(hass, raw):
+    _car(hass, soc=raw)
+    _calendar(hass, [])
+    shadow = EvShadow(hass, _ev_config())
+    await shadow.async_refresh_calendar(NOW)
+    report = shadow.evaluate(NOW, None, True, force=True)
+    assert report["state"] is None and report["reason"] in ("soc_invalid", "soc_unavailable")
+
+
+@pytest.mark.parametrize(("raw", "state"), [("0", "force_charge"), ("100", "idle")])
+async def test_the_limits_of_the_valid_soc_range_are_kept(hass, raw, state):
+    _car(hass, soc=raw)
+    _calendar(hass, [])
+    shadow = EvShadow(hass, _ev_config())
+    await shadow.async_refresh_calendar(NOW)
+    assert shadow.evaluate(NOW, None, True, force=True)["state"] == state
+
+
+UPDATED = "sensor.car_updated"
+
+
+def _updated_config():
+    return _ev_config(ev_soc_updated_entity=UPDATED)
+
+
+async def test_the_age_of_the_soc_is_the_cars_own_reading_time_not_the_ha_report(hass):
+    _car(hass, soc="60")
+    _calendar(hass, [])
+    hass.states.async_set(UPDATED, (NOW - timedelta(hours=30)).isoformat())
+    shadow = EvShadow(hass, _updated_config())
+    report = shadow.evaluate(NOW, None, True)
+    assert report["state"] is None and report["reason"] == "soc_stale"
+    assert report["soc_age_min"] == 30 * 60
+    hass.states.async_set(UPDATED, (NOW - timedelta(minutes=30)).isoformat())
+    report = shadow.evaluate(NOW, None, True)
+    assert report["state"] == "deferred" and report["soc_age_min"] == 30
+
+
+@pytest.mark.parametrize(("value", "reason"), [
+    ("unavailable", "soc_time_unknown"), ("not a time", "soc_time_unknown"),
+])
+async def test_an_unusable_reading_time_gives_no_decision(hass, value, reason):
+    _car(hass, soc="60")
+    hass.states.async_set(UPDATED, value)
+    report = EvShadow(hass, _updated_config()).evaluate(NOW, None, True, force=True)
+    assert report["state"] is None and report["reason"] == reason
+
+
+async def test_a_reading_time_from_the_future_does_not_authorise_charging(hass):
+    _car(hass, soc="60")
+    hass.states.async_set(UPDATED, (NOW + timedelta(hours=3)).isoformat())
+    report = EvShadow(hass, _updated_config()).evaluate(NOW, None, True, force=True)
+    assert report["state"] is None and report["reason"] == "soc_time_invalid"
+
+
+async def test_a_non_finite_wallbox_value_counts_as_unknown(hass):
+    _car(hass, soc="60")
+    _calendar(hass, [])
+    _wallbox(hass, paused="on", intensity="nan", dynamic="on")
+    shadow = EvShadow(hass, _wallbox_config())
+    await shadow.async_refresh_calendar(NOW)
+    report = shadow.evaluate(NOW, None, True, force=True)
+    assert report["intents"] == [] and report["intents_withheld"] == "wallbox state incomplete"
+    assert report["wallbox"]["intensity_a"] is None
+
+
+async def test_a_guard_that_is_configured_but_has_not_reported_leaves_the_ceiling_unknown(hass):
+    _car(hass, soc="60")
+    _calendar(hass, [])
+    _wallbox(hass, paused="on", dynamic="on")
+    config = replace(_wallbox_config(), phase_current_entities=("sensor.a", "sensor.b", "sensor.c"),
+                     phase_power_entities=("sensor.d", "sensor.e", "sensor.f"))
+    shadow = EvShadow(hass, config)
+    await shadow.async_refresh_calendar(NOW)
+    report = shadow.evaluate(NOW, None, True, force=True)
+    assert report["intents"] == [] and report["intents_withheld"] == "current ceiling unavailable"
+
+
+async def test_the_forced_charge_plan_respects_a_ceiling_below_the_minimum(hass):
+    _car(hass, soc="60")
+    _calendar(hass, [])
+    _wallbox(hass, paused="off", intensity="16", dynamic="on")
+    shadow = EvShadow(hass, _wallbox_config())
+    await shadow.async_refresh_calendar(NOW)
+    report = shadow.evaluate(NOW, {"ev_paused": False, "ev_current_cap_a": 2.0}, True, force=True)
+    assert [(i["target"], i["value"]) for i in report["intents"]] == [("pause", True)]
