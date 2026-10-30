@@ -118,7 +118,8 @@ class EnergyController:
         self._guard_failing = False
         self.ev = EvShadow(hass, config)
         self.ev_exec = EvExecutor(
-            DeviceIO(hass, call_timeout_s=10.0, readback_timeout_s=10.0), config, self.gates)
+            DeviceIO(hass, call_timeout_s=10.0, readback_timeout_s=10.0), config, self.gates,
+            grid_busy=self._grid_charging_busy)
         self.ev_report: dict | None = None  # report only: nothing is written
         self.ev_force = False  # "must charge": set by a switch, restored by it after a restart
         self.profiles = ProfileReceiver()
@@ -203,6 +204,14 @@ class EnergyController:
         self.ev_force = on
         await self._observe_ev(dt_util.utcnow())
         self._notify()
+
+    def _grid_charging_busy(self) -> bool:
+        """The house battery is being charged from the grid, or a grant is on its way to."""
+        state = self.runtime.state
+        if state is not None and (state.active_grant is not None
+                                  or state.pending_step is not None):
+            return True
+        return self.io.read(self.config.grid_charge_entity) is not False
 
     def _ev_report(self, now: datetime) -> dict | None:
         return self.ev.evaluate(

@@ -298,3 +298,34 @@ async def test_a_failed_write_is_not_retried_every_second_but_a_protective_pause
     later = await executor.async_apply(report, now=NOW + timedelta(seconds=31),
                                        recheck=_same(report))
     assert later.result == "done" and device.value(PAUSE) == "off"
+
+
+async def test_nothing_is_enabled_while_the_house_battery_charges_from_the_grid(
+        storage_hass, device):
+    busy = {"on": True}
+    io = DeviceIO(storage_hass, call_timeout_s=0.3, readback_timeout_s=0.3, poll_interval_s=0.02)
+    cfg = _config()
+    executor = EvExecutor(io, cfg, Gates(storage_hass, shadow_entity=cfg.shadow_entity,
+                                         feature_entity=cfg.feature_entity),
+                          grid_busy=lambda: busy["on"])
+    report = _report()
+    held = await executor.async_apply(report, now=NOW, recheck=_same(report))
+    assert held.result == "held" and "grid charging" in held.reason and device.calls == []
+    pause = await executor.async_apply(
+        _report("curtailed", [_step("pause", True, "protect")]), now=NOW, recheck=lambda: None)
+    assert pause.result == "done"  # protection is never held
+    busy["on"] = False
+    _wallbox(storage_hass)
+    ok = await executor.async_apply(report, now=NOW, recheck=_same(report))
+    assert ok.result == "done"
+
+
+async def test_the_controller_counts_a_running_grant_or_a_charging_inverter_as_busy(
+        storage_hass, device):
+    controller = await _live_controller(storage_hass)
+    storage_hass.states.async_set(controller.config.grid_charge_entity, "off")
+    assert controller._grid_charging_busy() is False
+    storage_hass.states.async_set(controller.config.grid_charge_entity, "on")
+    assert controller._grid_charging_busy() is True
+    storage_hass.states.async_set(controller.config.grid_charge_entity, "unavailable")
+    assert controller._grid_charging_busy() is True  # unknown counts as busy: nothing is assumed

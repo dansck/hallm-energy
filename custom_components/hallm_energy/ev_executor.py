@@ -11,6 +11,9 @@ A step is a write that is confirmed by reading the value back. Rules:
 * the first step that is not confirmed stops the sequence, so nothing after a failed preparation
   (in particular the un-pause) is ever written;
 * a step whose value is already in place is skipped;
+* nothing is enabled while the house battery is charged from the grid (a grant running or being
+  prepared): the two loads would add up on the main breaker, and the phase guard is the last line
+  of defence, not the plan;
 * after a write that failed or was not confirmed, the next attempt (other than a protective one)
   waits `RETRY_AFTER`, so a device that does not answer is not hammered every second;
 * routine charging does not restart within `RESTART_HOLD` of a pause and not more than
@@ -46,8 +49,10 @@ class EvWriteReport:
 
 
 class EvExecutor:
-    def __init__(self, io: DeviceIO, config: EnergyConfig, gates: Gates) -> None:
+    def __init__(self, io: DeviceIO, config: EnergyConfig, gates: Gates,
+                 grid_busy: Callable[[], bool] | None = None) -> None:
         self.io, self.config, self.gates = io, config, gates
+        self._grid_busy = grid_busy or (lambda: False)
         self._lock = asyncio.Lock()
         self._epoch = 0
         self._last_pause_at: datetime | None = None
@@ -105,6 +110,9 @@ class EvExecutor:
             self._epoch += 1  # whatever is in flight stops at its next check
         elif self._lock.locked():
             out.result = "busy"
+            return out
+        elif self._grid_busy():
+            out.result, out.reason = "held", "grid charging of the house battery in progress"
             return out
         elif self._retry_at is not None and now < self._retry_at:
             out.result, out.reason = "backoff", "waiting after a failed write"
