@@ -72,7 +72,8 @@
           "ev_wallbox_dynamic_entity": "Wallbox dynamic modulation switch (optional)",
           "ev_soc_updated_entity": "EV data timestamp sensor (optional)",
           "ev_deadline_allow_peak": "EV deadline may use peak tariff",
-          "manage_ev": "Wallbox management"
+          "manage_ev": "Wallbox management",
+          "ev_limit_entity": "EV charge limit on the car (optional)"
         },
         "data_description": {
           "soc_entity": "Sensor with the battery state of charge (%).",
@@ -142,7 +143,8 @@
           "ev_wallbox_dynamic_entity": "The wallbox follows the surplus on its own but keeps at least its minimum current, so it does not stop when the surplus is small.",
           "ev_soc_updated_entity": "When the car last sent its data. Without it the age of the battery level is the age of the Home Assistant report, which a cached cloud value keeps looking fresh.",
           "ev_deadline_allow_peak": "A request from the calendar may charge in peak tariff, but only when the off-peak time before its deadline is not enough. Routine charging never uses peak.",
-          "manage_ev": "Activation gate for the wallbox: when on AND the shadow switch is off AND all four wallbox entities and the phase guard are configured, the integration writes the wallbox (pause, dynamic modulation, current, ceiling) according to the EV plan, each write confirmed by reading it back. Off by default; the plan is only reported."
+          "manage_ev": "Activation gate for the wallbox: when on AND the shadow switch is off AND all four wallbox entities and the phase guard are configured, the integration writes the wallbox (pause, dynamic modulation, current, ceiling) according to the EV plan, each write confirmed by reading it back. Off by default; the plan is only reported.",
+          "ev_limit_entity": "The charge limit set on the car (steps of 10 %). Kept at the default target; raised shortly before the final top-up of a request above it, and set back afterwards. Written only when wallbox management is on."
         }
       }
     },
@@ -226,7 +228,8 @@
           "ev_wallbox_dynamic_entity": "Wallbox dynamic modulation switch (optional)",
           "ev_soc_updated_entity": "EV data timestamp sensor (optional)",
           "ev_deadline_allow_peak": "EV deadline may use peak tariff",
-          "manage_ev": "Wallbox management"
+          "manage_ev": "Wallbox management",
+          "ev_limit_entity": "EV charge limit on the car (optional)"
         },
         "data_description": {
           "soc_entity": "Sensor with the battery state of charge (%).",
@@ -296,7 +299,8 @@
           "ev_wallbox_dynamic_entity": "The wallbox follows the surplus on its own but keeps at least its minimum current, so it does not stop when the surplus is small.",
           "ev_soc_updated_entity": "When the car last sent its data. Without it the age of the battery level is the age of the Home Assistant report, which a cached cloud value keeps looking fresh.",
           "ev_deadline_allow_peak": "A request from the calendar may charge in peak tariff, but only when the off-peak time before its deadline is not enough. Routine charging never uses peak.",
-          "manage_ev": "Activation gate for the wallbox: when on AND the shadow switch is off AND all four wallbox entities and the phase guard are configured, the integration writes the wallbox (pause, dynamic modulation, current, ceiling) according to the EV plan, each write confirmed by reading it back. Off by default; the plan is only reported."
+          "manage_ev": "Activation gate for the wallbox: when on AND the shadow switch is off AND all four wallbox entities and the phase guard are configured, the integration writes the wallbox (pause, dynamic modulation, current, ceiling) according to the EV plan, each write confirmed by reading it back. Off by default; the plan is only reported.",
+          "ev_limit_entity": "The charge limit set on the car (steps of 10 %). Kept at the default target; raised shortly before the final top-up of a request above it, and set back afterwards. Written only when wallbox management is on."
         }
       }
     },

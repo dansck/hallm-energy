@@ -329,3 +329,77 @@ async def test_the_controller_counts_a_running_grant_or_a_charging_inverter_as_b
     assert controller._grid_charging_busy() is True
     storage_hass.states.async_set(controller.config.grid_charge_entity, "unavailable")
     assert controller._grid_charging_busy() is True  # unknown counts as busy: nothing is assumed
+
+
+# --- the limit on the car ------------------------------------------------------------------------
+
+LIMIT = "number.car_limit"
+
+
+def _limit_writer(hass, **over):
+    from custom_components.hallm_energy.ev_limit import CarLimitWriter
+
+    cfg = replace(_config(), **{"ev_limit_entity": LIMIT, **over})
+    io = DeviceIO(hass, call_timeout_s=0.3, readback_timeout_s=0.3, poll_interval_s=0.02)
+    return CarLimitWriter(hass, cfg, Gates(hass, shadow_entity=cfg.shadow_entity,
+                                           feature_entity=cfg.feature_entity), io=io)
+
+
+async def test_the_car_limit_is_written_in_the_background_and_confirmed(storage_hass, device):
+    storage_hass.states.async_set(LIMIT, "80")
+    writer = _limit_writer(storage_hass)
+    writer.request(100.0, NOW)
+    await writer._task
+    assert writer.last_result == "done" and device.value(LIMIT) == "100.0"
+    writer.request(100.0, NOW)
+    assert writer.last_result == "in place"
+
+
+async def test_the_car_limit_is_only_reported_while_the_gate_is_closed(storage_hass, device):
+    storage_hass.states.async_set(LIMIT, "80")
+    writer = _limit_writer(storage_hass, manage_ev=False)
+    writer.request(100.0, NOW)
+    assert writer.last_result == "shadow" and device.calls == []
+    writer = _limit_writer(storage_hass)
+    storage_hass.states.async_set(CONFIG.shadow_entity, "on")
+    writer.request(100.0, NOW)
+    assert writer.last_result == "shadow" and device.calls == []
+
+
+async def test_a_second_request_does_not_start_a_second_write(storage_hass, device):
+    storage_hass.states.async_set(LIMIT, "80")
+    gate = asyncio.Event()
+    device.stall[(LIMIT, 100.0)] = gate
+    writer = _limit_writer(storage_hass)
+    writer.io.call_timeout_s = writer.io.readback_timeout_s = 5.0
+    writer.request(100.0, NOW)
+    await asyncio.sleep(0.05)
+    writer.request(100.0, NOW)
+    assert writer.last_result == "busy" and len(device.calls) == 1
+    gate.set()
+    await writer._task
+
+
+async def test_a_limit_write_that_fails_waits_before_the_next_attempt(storage_hass, device):
+    from custom_components.hallm_energy.ev_limit import RETRY_AFTER
+
+    storage_hass.states.async_set(LIMIT, "80")
+    device.reject.add((LIMIT, 100.0))
+    writer = _limit_writer(storage_hass)
+    writer.request(100.0, NOW)
+    await writer._task
+    assert writer.last_result == "failed"
+    writer.request(100.0, NOW + timedelta(minutes=1))
+    assert writer.last_result == "backoff" and len(device.calls) == 1
+    device.reject.clear()
+    writer.request(100.0, NOW + RETRY_AFTER)
+    await writer._task
+    assert writer.last_result == "done"
+
+
+async def test_no_limit_entity_or_no_desired_value_writes_nothing(storage_hass, device):
+    writer = _limit_writer(storage_hass, ev_limit_entity=None)
+    writer.request(100.0, NOW)
+    writer = _limit_writer(storage_hass)
+    writer.request(None, NOW)
+    assert device.calls == []

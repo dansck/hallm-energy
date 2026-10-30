@@ -122,6 +122,7 @@ class StatusSensor(SensorEntity):
                 "floors": tick.floors,
                 "phase_guard": controller.guard_report,
                 "ev": controller.ev_report,
+                "ev_limit": {"result": controller.ev_limit.last_result},
                 "ev_executor": {
                     "live": controller.ev_exec.last.live, "result": controller.ev_exec.last.result,
                     "reason": controller.ev_exec.last.reason,

@@ -20,6 +20,7 @@ from .config import EnergyConfig
 from .energy_core.ev import (
     EvRequest,
     deadline_feasibility,
+    desired_car_limit_pct,
     effective_ev_target_pct,
     ev_state,
     ev_state_unknown_soc,
@@ -43,6 +44,8 @@ CALENDAR_TIMEOUT_S = 10.0
 SOC_UNUSABLE_AFTER = timedelta(hours=24)
 CLOCK_SKEW = timedelta(minutes=5)  # a reading from the future beyond this is not believed
 ASSIST_WINDOW_H = 3.0
+TOPUP_MARGIN_H = 1.0  # the final top-up ends about this long before the departure
+LIMIT_LEAD_H = 0.25  # the car limit goes up this long before the top-up has to start
 
 
 def _event_start(raw: Any) -> datetime | None:
@@ -147,7 +150,8 @@ class EvShadow:
 
     def evaluate(self, now: datetime, guard: dict | None, grid_present: bool | None,
                  force: bool = False,
-                 tariff: Callable[[datetime | None], TariffFacts] | None = None
+                 tariff: Callable[[datetime | None], TariffFacts] | None = None,
+                 sun: tuple[int | None, float, bool] | None = None
                  ) -> dict[str, Any] | None:
         """`None` when the EV report is not configured."""
         cfg = self.config
@@ -176,6 +180,10 @@ class EvShadow:
             calendar_target_pct=None,
             default_target_pct=cfg.ev_default_target_pct)
         curtailed = bool(guard and guard.get("ev_paused")) or grid_present is False
+        sun_day = None if sun is None else sun[0]
+        if sun is not None:
+            report["sun"] = {"first_window_day": sun[0], "window_kwh": round(sun[1], 1),
+                             "forecast_covers_span": sun[2]}
         if soc is None:
             decision = ev_state_unknown_soc(
                 connected_at_home=connected, effective_target_pct=target, curtailed=curtailed,
@@ -196,10 +204,12 @@ class EvShadow:
                 battery_assist_eligible=False,
                 mobility_floor_needed=mobility_floor_needed(
                     soc_pct=soc, mobility_min_pct=cfg.ev_mobility_min_pct,
-                    trip_pct_per_day=cfg.ev_daily_trip_pct),
+                    trip_pct_per_day=cfg.ev_daily_trip_pct,
+                    days=1.0 if sun_day is None else float(sun_day + 1)),
                 pv_charge_eligible=False,
-                deferred_eligible=True,
-                force_charge=force)
+                deferred_eligible=sun_day is not None,  # sun is coming: wait for it
+                force_charge=force,
+                routine_charge=True)  # otherwise hold the level from off-peak
         report["state"] = decision.state
         report["effective_target_pct"] = decision.effective_target_pct
         report["force_requested"] = force
@@ -220,6 +230,21 @@ class EvShadow:
                 report["request"] |= {
                     "energy_needed_kwh": round(energy, 1),
                     "hours_needed_at_max": round(hours, 1), "feasible": feasible}
+        hours_to_deadline = None if request is None else max(
+            0.0, (request.deadline_at - now).total_seconds() / 3600.0)
+        defer_topup = bool(
+            request is not None and soc is not None and target > cfg.ev_default_target_pct
+            and soc >= cfg.ev_default_target_pct and hours_needed is not None
+            and hours_to_deadline is not None
+            and hours_to_deadline > hours_needed + TOPUP_MARGIN_H)
+        report["car_limit_desired"] = desired_car_limit_pct(
+            hold_pct=cfg.ev_default_target_pct,
+            request_target_pct=None if request is None else target,
+            hours_to_deadline=hours_to_deadline, hours_needed=hours_needed,
+            margin_h=TOPUP_MARGIN_H, lead_h=LIMIT_LEAD_H)
+        if cfg.ev_limit_entity:
+            limit_now = self._number(cfg.ev_limit_entity)[0]
+            report["car_limit"] = {"desired": report["car_limit_desired"], "current": limit_now}
         facts_tariff = None
         if tariff is not None:
             facts_tariff = tariff(None if request is None else request.deadline_at)
@@ -228,10 +253,10 @@ class EvShadow:
                 "nt_hours_to_deadline": None if facts_tariff.nt_hours_to_deadline is None
                 else round(facts_tariff.nt_hours_to_deadline, 1),
                 "schedule_covers_deadline": facts_tariff.covered}
-        if decision.state in ("mobility_floor", "deadline"):
+        if decision.state in ("mobility_floor", "routine", "deadline"):
             allowed, why = grid_charge_gate(
                 decision.state, tariff=facts_tariff, hours_needed=hours_needed,
-                allow_peak_for_deadline=cfg.ev_deadline_allow_peak)
+                allow_peak_for_deadline=cfg.ev_deadline_allow_peak, defer_topup=defer_topup)
             report["grid_charge"] = {"allowed": allowed, "reason": why}
             if allowed:
                 # charging from the grid must not drain the house battery
@@ -250,7 +275,8 @@ class EvShadow:
                 cap_a = None if cfg.phase_current_entities else cfg.guard_ev_cap_a
             intents, withheld = plan_ev_intents(
                 decision.state, wallbox=facts, cap_a=cap_a, tariff=facts_tariff,
-                hours_needed=hours_needed, allow_peak_for_deadline=cfg.ev_deadline_allow_peak)
+                hours_needed=hours_needed, allow_peak_for_deadline=cfg.ev_deadline_allow_peak,
+                defer_topup=defer_topup)
             report["wallbox"] = {
                 "paused": facts.paused, "intensity_a": facts.intensity_a,
                 "max_intensity_a": facts.max_intensity_a, "dynamic_on": facts.dynamic_on,

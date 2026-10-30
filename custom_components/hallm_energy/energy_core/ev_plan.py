@@ -25,7 +25,7 @@ MIN_POWER_KW = PHASES * VOLTAGE_V * MIN_CURRENT_A / 1000.0  # 4.14 kW
 IntentTarget = Literal["pause", "intensity", "max_intensity", "dynamic"]
 IntentPhase = Literal["protect", "prepare", "enable"]
 _UNPLANNED = ("battery_assist", "pv_charge")
-_GRID_STATES = ("mobility_floor", "deadline")
+_GRID_STATES = ("mobility_floor", "routine", "deadline")
 
 
 @dataclass(frozen=True)
@@ -45,14 +45,17 @@ def grid_charge_gate(
     tariff: TariffFacts | None,
     hours_needed: float | None,
     allow_peak_for_deadline: bool,
+    defer_topup: bool = False,
 ) -> tuple[bool | None, str]:
     """`(allowed, reason)` for charging from the grid in this state; `allowed` is `None` when
     the tariff is not known well enough to say."""
+    if defer_topup:
+        return False, "top-up above the hold level waits until shortly before departure"
     if tariff is None or tariff.nt_now is None:
         return None, "tariff unknown"
     if tariff.nt_now:
         return True, "off-peak"
-    if state == "mobility_floor":
+    if state in ("mobility_floor", "routine"):
         return False, "peak: routine charging waits for off-peak"
     if not allow_peak_for_deadline:
         return False, "peak: the owner does not allow peak charging for a deadline"
@@ -130,6 +133,7 @@ def plan_ev_intents(
     tariff: TariffFacts | None = None,
     hours_needed: float | None = None,
     allow_peak_for_deadline: bool = True,
+    defer_topup: bool = False,
 ) -> tuple[tuple[EvIntent, ...], str | None]:
     """`(intents, withheld_reason)`. `cap_a` is the current ceiling in force (the phase guard's
     cap), `None` when it is not known. Charging is discrete: off, or between the wallbox minimum
@@ -150,7 +154,7 @@ def plan_ev_intents(
     if state in _GRID_STATES:
         allowed, reason = grid_charge_gate(
             state, tariff=tariff, hours_needed=hours_needed,
-            allow_peak_for_deadline=allow_peak_for_deadline)
+            allow_peak_for_deadline=allow_peak_for_deadline, defer_topup=defer_topup)
         if allowed is None:
             return (), reason
         if not allowed:

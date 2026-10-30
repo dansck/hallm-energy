@@ -33,9 +33,11 @@ from .audit_outbox import AuditOutbox
 from .config import EnergyConfig
 from .const import POLICY_VERSION
 from .device_io import DeviceIO, WriteResult
-from .energy_core.ev_plan import TariffFacts
+from .energy_core.ev_plan import MIN_POWER_KW, TariffFacts
+from .energy_core.ev_sun import first_sun_day
 from .ev_executor import EvExecutor
 from .ev_flow import EvShadow
+from .ev_limit import CarLimitWriter
 from .executor import Gates, GrantExecutor, Snapshot
 from .floor_table import FloorContext, FloorPlan, floor_plan, hold_floor_pct
 from .guard_flow import GuardShadow
@@ -121,6 +123,7 @@ class EnergyController:
             DeviceIO(hass, call_timeout_s=10.0, readback_timeout_s=10.0), config, self.gates,
             grid_busy=self._grid_charging_busy)
         self.ev_report: dict | None = None  # report only: nothing is written
+        self.ev_limit = CarLimitWriter(hass, config, self.gates)
         self.ev_force = False  # "must charge": set by a switch, restored by it after a restart
         self.profiles = ProfileReceiver()
         self.pv_forecasts = PvForecastReceiver()
@@ -216,7 +219,19 @@ class EnergyController:
     def _ev_report(self, now: datetime) -> dict | None:
         return self.ev.evaluate(
             now, self.guard_report, self._grid_present(), self.ev_force,
-            lambda deadline: self._tariff_facts(now, deadline))
+            lambda deadline: self._tariff_facts(now, deadline), self._sun_outlook(now))
+
+    def _sun_outlook(self, now: datetime) -> tuple[int | None, float, bool] | None:
+        """The first day with sun worth waiting for, from the PV forecast and the house profile;
+        `None` when either is missing (then nobody waits for sun that cannot be vouched for)."""
+        pv, profile = self.pv_forecasts.forecast, self.profiles.profile
+        cfg = self.config
+        if pv is None or profile is None or cfg.recovery is None:
+            return None
+        need_kwh = cfg.ev_daily_trip_pct * cfg.ev_ac_kwh_per_pct
+        return first_sun_day(
+            pv.kw_at, profile.p50_at, start=now, days=cfg.recovery.outlook_days,
+            tz=dt_util.get_default_time_zone(), min_surplus_kw=MIN_POWER_KW, min_kwh=need_kwh)
 
     async def _observe_ev(self, now: datetime) -> None:
         """The EV report and, when the gate is live, its carrying out. Outside the control lock
@@ -233,6 +248,8 @@ class EnergyController:
         self.ev_report = report
         if changed:
             self._notify()
+        if report is not None and report.get("car_limit_desired") is not None:
+            self.ev_limit.request(report["car_limit_desired"], now)
         if report is not None and report.get("intents"):
             before = (self.ev_exec.last.result, self.ev_exec.last.reason)
             try:

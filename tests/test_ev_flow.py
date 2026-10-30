@@ -107,11 +107,11 @@ async def test_low_soc_without_a_request_is_the_mobility_floor(hass):
     assert report["state"] == "mobility_floor" and report["effective_target_pct"] == 80.0
 
 
-async def test_a_comfortable_soc_below_the_target_is_deferred_and_at_target_idle(hass):
+async def test_a_soc_below_the_hold_level_is_routine_charging_and_at_the_level_idle(hass):
     _car(hass, soc="60")
     _calendar(hass, [])
     _, report = await _state(hass)
-    assert report["state"] == "deferred"
+    assert report["state"] == "routine"
     _car(hass, soc="81")
     _, report = await _state(hass)
     assert report["state"] == "idle"
@@ -221,7 +221,7 @@ async def test_the_force_wish_makes_a_forced_charge_at_full_power_regardless_of_
     _calendar(hass, [])
     shadow = EvShadow(hass, _ev_config())
     await shadow.async_refresh_calendar(NOW)
-    assert shadow.evaluate(NOW, None, True)["state"] == "deferred"
+    assert shadow.evaluate(NOW, None, True)["state"] == "routine"
     report = shadow.evaluate(NOW, None, True, force=True)
     assert report["state"] == "force_charge" and report["force_requested"] is True
     assert report["tariff_ignored"] is True and report["power"] == "max"
@@ -269,7 +269,7 @@ async def test_the_switch_exists_only_with_the_car_configured_and_drives_the_rep
     assert hass.states.get(switch.entity_id).state == "on"
     await hass.services.async_call("switch", "turn_off", {"entity_id": switch.entity_id},
                                    blocking=True)
-    assert controller.ev_force is False and controller.ev_report["state"] == "deferred"
+    assert controller.ev_force is False and controller.ev_report["state"] == "routine"
     assert await hass.config_entries.async_unload(entry.entry_id)
 
 
@@ -322,12 +322,12 @@ async def test_without_wallbox_entities_the_report_has_no_plan(hass):
     assert "intents" not in report and "wallbox" not in report
 
 
-async def test_a_deferred_car_with_a_running_wallbox_would_be_paused(hass):
-    _car(hass, soc="60")
+async def test_a_car_at_the_hold_level_with_a_running_wallbox_would_be_paused(hass):
+    _car(hass, soc="85")
     _calendar(hass, [])
     _wallbox(hass, paused="off")
     _, report = await _state(hass, config=_wallbox_config())
-    assert report["state"] == "deferred" and _intents(report) == {("pause", True)}
+    assert report["state"] == "idle" and _intents(report) == {("pause", True)}
     assert report["wallbox"]["min_power_kw"] == 4.14 and report["intents_withheld"] is None
 
 
@@ -413,7 +413,7 @@ async def test_the_age_of_the_soc_is_the_cars_own_reading_time_not_the_ha_report
     assert report["soc_age_min"] == 30 * 60
     hass.states.async_set(UPDATED, (NOW - timedelta(minutes=30)).isoformat())
     report = shadow.evaluate(NOW, None, True)
-    assert report["state"] == "deferred" and report["soc_age_min"] == 30
+    assert report["state"] == "routine" and report["soc_age_min"] == 30
 
 
 @pytest.mark.parametrize(("value", "reason"), [
@@ -644,3 +644,131 @@ async def test_over_the_trip_level_the_ceiling_still_comes_down_with_the_guard(h
     report = shadow.evaluate(NOW, guard, True, force=True)
     steps = [(i["target"], i["value"]) for i in report["intents"]]
     assert steps == [("intensity", 10.0), ("max_intensity", 10.0)]
+
+
+# --- hold at 80, the final top-up just before departure, the limit on the car -------------------
+
+LIMIT = "number.car_limit"
+
+
+def _limit_config(**over):
+    return replace(_wallbox_config(), ev_limit_entity=LIMIT, **over)
+
+
+async def test_routine_charging_runs_in_off_peak_and_waits_in_peak(hass):
+    _car(hass, soc="60")
+    _calendar(hass, [])
+    _wallbox(hass, paused="on", intensity="16", dynamic="off")
+    shadow = EvShadow(hass, _wallbox_config())
+    await shadow.async_refresh_calendar(NOW)
+    night = shadow.evaluate(NOW, None, True, tariff=lambda d: TariffFacts(True, None, False))
+    assert night["state"] == "routine" and night["grid_charge"]["allowed"] is True
+    assert {(i["target"], i["value"]) for i in night["intents"]} == {("pause", False)}
+    _wallbox(hass, paused="off", intensity="16", dynamic="off")
+    day = shadow.evaluate(NOW, None, True, tariff=lambda d: TariffFacts(False, None, False))
+    assert day["state"] == "routine" and day["grid_charge"]["allowed"] is False
+    assert {(i["target"], i["value"]) for i in day["intents"]} == {("pause", True)}
+
+
+async def test_a_request_above_the_hold_level_waits_for_the_last_hours_before_departure(hass):
+    _car(hass, soc="80")
+    start = (NOW + timedelta(hours=20)).isoformat()
+    _calendar(hass, [{"start": start, "end": start, "summary": "EV 100"}])
+    _wallbox(hass, paused="off", intensity="16", dynamic="off")
+    hass.states.async_set(LIMIT, "80")
+    shadow = EvShadow(hass, _limit_config())
+    await shadow.async_refresh_calendar(NOW)
+    early = shadow.evaluate(NOW, None, True, tariff=lambda d: TariffFacts(True, 15.0, True))
+    assert early["state"] == "deadline" and early["grid_charge"]["allowed"] is False
+    assert "shortly before departure" in early["grid_charge"]["reason"]
+    assert {(i["target"], i["value"]) for i in early["intents"]} == {("pause", True)}
+    assert early["car_limit"] == {"desired": 80.0, "current": 80.0}
+    # 2.5 h before departure: the limit is raised ahead of time, charging has not started yet
+    ahead = shadow.evaluate(NOW + timedelta(hours=17, minutes=30), None, True,
+                            tariff=lambda d: TariffFacts(True, 2.5, True))
+    assert ahead["car_limit"]["desired"] == 100.0 and ahead["grid_charge"]["allowed"] is False
+    due = shadow.evaluate(NOW + timedelta(hours=18), None, True,
+                          tariff=lambda d: TariffFacts(True, 2.0, True))
+    assert due["grid_charge"]["allowed"] is True and due["car_limit"]["desired"] == 100.0
+
+
+async def test_below_the_hold_level_a_request_charges_at_once(hass):
+    _car(hass, soc="60")
+    start = (NOW + timedelta(hours=20)).isoformat()
+    _calendar(hass, [{"start": start, "end": start, "summary": "EV 100"}])
+    shadow = EvShadow(hass, _wallbox_config())
+    await shadow.async_refresh_calendar(NOW)
+    report = shadow.evaluate(NOW, None, True, tariff=lambda d: TariffFacts(True, 15.0, True))
+    assert report["state"] == "deadline" and report["grid_charge"]["allowed"] is True
+
+
+async def test_a_request_at_the_hold_level_needs_no_waiting_and_no_limit_change(hass):
+    _car(hass, soc="50")
+    start = (NOW + timedelta(hours=20)).isoformat()
+    _calendar(hass, [{"start": start, "end": start, "summary": "EV 80"}])
+    hass.states.async_set(LIMIT, "80")
+    shadow = EvShadow(hass, _limit_config())
+    await shadow.async_refresh_calendar(NOW)
+    report = shadow.evaluate(NOW, None, True, tariff=lambda d: TariffFacts(True, 15.0, True))
+    assert report["grid_charge"]["allowed"] is True
+    assert report["car_limit"] == {"desired": 80.0, "current": 80.0}
+
+
+async def test_after_the_departure_the_limit_goes_back_to_the_hold_level(hass):
+    _car(hass, soc="100")
+    _calendar(hass, [])
+    hass.states.async_set(LIMIT, "100")
+    shadow = EvShadow(hass, _limit_config())
+    await shadow.async_refresh_calendar(NOW)
+    report = shadow.evaluate(NOW, None, True)
+    assert report["car_limit"] == {"desired": 80.0, "current": 100.0}
+
+
+# --- wait for sun only when it is coming --------------------------------------------------------
+
+
+async def _sun_state(hass, soc, sun):
+    _car(hass, soc=soc)
+    _calendar(hass, [])
+    shadow = EvShadow(hass, _wallbox_config())
+    await shadow.async_refresh_calendar(NOW)
+    return shadow.evaluate(NOW, None, True, tariff=lambda d: TariffFacts(True, None, False),
+                           sun=sun)
+
+
+async def test_with_sun_coming_and_enough_energy_the_car_waits_for_it(hass):
+    report = await _sun_state(hass, "60", (1, 22.0, True))
+    assert report["state"] == "deferred"
+    assert report["sun"] == {"first_window_day": 1, "window_kwh": 22.0,
+                             "forecast_covers_span": True}
+    assert "grid_charge" not in report  # waiting: no charging from the grid is asked for
+
+
+async def test_with_no_sun_in_the_coming_days_the_level_is_held_from_off_peak(hass):
+    report = await _sun_state(hass, "60", (None, 0.0, True))
+    assert report["state"] == "routine" and report["grid_charge"]["allowed"] is True
+
+
+async def test_without_a_forecast_nobody_waits_for_sun_that_cannot_be_vouched_for(hass):
+    report = await _sun_state(hass, "60", None)
+    assert report["state"] == "routine" and "sun" not in report
+
+
+async def test_waiting_for_sun_is_bounded_by_the_energy_for_the_driving_until_then(hass):
+    # sun only the day after tomorrow: 30 % minimum + 3 days of 10 % = 60 %
+    assert (await _sun_state(hass, "55", (2, 22.0, True)))["state"] == "mobility_floor"
+    assert (await _sun_state(hass, "65", (2, 22.0, True)))["state"] == "deferred"
+    # sun today: 30 % + 1 day = 40 %
+    assert (await _sun_state(hass, "35", (0, 12.0, True)))["state"] == "mobility_floor"
+    assert (await _sun_state(hass, "45", (0, 12.0, True)))["state"] == "deferred"
+
+
+async def test_a_request_with_a_deadline_does_not_wait_for_sun(hass):
+    _car(hass, soc="50")
+    start = (NOW + timedelta(hours=20)).isoformat()
+    _calendar(hass, [{"start": start, "end": start, "summary": "EV 80"}])
+    shadow = EvShadow(hass, _wallbox_config())
+    await shadow.async_refresh_calendar(NOW)
+    report = shadow.evaluate(NOW, None, True, tariff=lambda d: TariffFacts(True, 15.0, True),
+                             sun=(1, 22.0, True))
+    assert report["state"] == "deadline" and report["grid_charge"]["allowed"] is True

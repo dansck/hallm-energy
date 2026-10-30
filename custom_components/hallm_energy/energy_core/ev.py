@@ -7,6 +7,7 @@ arrive as ready-made eligibility flags, so this module never claims they were ve
 
 from __future__ import annotations
 
+import math
 import re
 from collections.abc import Iterable
 from dataclasses import dataclass
@@ -16,6 +17,7 @@ from typing import Literal
 EvState = Literal[
     "away",
     "idle",
+    "routine",
     "force_charge",
     "deferred",
     "pv_charge",
@@ -97,6 +99,31 @@ def effective_ev_target_pct(
     return default_target_pct
 
 
+def ceil10(value: float) -> float:
+    """The car's charge limit moves in steps of ten percent."""
+    return float(math.ceil(value / 10.0 - 1e-9) * 10)
+
+
+def desired_car_limit_pct(
+    *,
+    hold_pct: float,
+    request_target_pct: float | None,
+    hours_to_deadline: float | None,
+    hours_needed: float | None,
+    margin_h: float,
+    lead_h: float,
+) -> float:
+    """The limit to have set on the car. Normally the hold level. For a request above it the limit
+    is raised shortly before the top-up has to start (the cloud takes a while to apply it) and goes
+    back to the hold level when the request is over. A request whose energy is unknown raises it
+    when the deadline is near, so the car can never stop below what was asked for."""
+    base = ceil10(hold_pct)
+    if request_target_pct is None or request_target_pct <= hold_pct or hours_to_deadline is None:
+        return base
+    ahead = (hours_needed if hours_needed is not None else 6.0) + margin_h + lead_h
+    return ceil10(request_target_pct) if hours_to_deadline <= ahead else base
+
+
 def mobility_floor_needed(
     *, soc_pct: float, mobility_min_pct: float, trip_pct_per_day: float, days: float = 1.0
 ) -> bool:
@@ -163,6 +190,7 @@ def ev_state(
     pv_charge_eligible: bool,
     deferred_eligible: bool,
     force_charge: bool = False,
+    routine_charge: bool = False,
 ) -> EvDecision:
     """Priority order: curtailed, a forced charge, deadline / battery assist, mobility floor,
     charging from surplus, deferred, idle; away when the car is not connected at home.
@@ -199,4 +227,6 @@ def ev_state(
         return EvDecision("pv_charge", effective_target_pct)
     if deferred_eligible:
         return EvDecision("deferred", effective_target_pct)
+    if routine_charge:  # no point waiting for sun that is not coming: hold the level
+        return EvDecision("routine", effective_target_pct)
     return EvDecision("deferred", effective_target_pct)
