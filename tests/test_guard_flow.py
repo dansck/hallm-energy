@@ -114,19 +114,112 @@ async def test_a_sensor_that_does_not_exist_is_not_a_fresh_reading(hass):
     assert report["import_a"] is None and report["measured_at"] is None
 
 
-# --- in the loop --------------------------------------------------------------------
+# --- on its own timer ---------------------------------------------------------------
 
 
-async def test_the_tick_reports_the_guard_and_writes_nothing(storage_hass, freezer):
+async def _guarded_controller(storage_hass, freezer):
     freezer.move_to(NOW)
     inverter = FakeInverter(storage_hass)
     set_telemetry(storage_hass)
     controller = await _controller(storage_hass, _fresh_state(), live=True)
     controller.config = _guarded(controller.config)
     controller.guard = GuardShadow(controller.config)
+    return controller, inverter
+
+
+async def test_a_step_stores_the_report_and_the_tick_does_not_touch_it(storage_hass, freezer):
+    controller, _ = await _guarded_controller(storage_hass, freezer)
+    _phases(storage_hass, (23, 6, 7), (5000, 1000, 900))
+    controller.guard_step(NOW)
+    assert controller.guard_report["import_a"] == 23
+    status = await controller.async_tick()
+    assert status.result != "error"
+    assert controller.guard_report["import_a"] == 23  # the tick only listens, never evaluates
+
+
+async def test_listeners_hear_only_decision_changes_not_every_reading(storage_hass, freezer):
+    controller, _ = await _guarded_controller(storage_hass, freezer)
+    heard: list[int] = []
+    controller.add_listener(lambda: heard.append(1))
+    _phases(storage_hass, (6, 7, 8), (1000, 1000, 1000))
+    controller.guard_step(NOW)
+    assert len(heard) == 1  # the first report (None -> unrestricted)
+    for second in range(1, 6):  # quiet readings, values move every second
+        _phases(storage_hass, (6 + second / 10, 7, 8), (1000, 1000, 1000))
+        controller.guard_step(NOW + timedelta(seconds=second))
+    assert len(heard) == 1
+    for second in range(6, 20):  # an excess that lasts: the first step down is one change
+        _phases(storage_hass, (23, 7, 8), (5000, 1000, 1000))
+        controller.guard_step(NOW + timedelta(seconds=second))
+    assert len(heard) == 2
+    assert controller.guard_report["restricted"] is True
+
+
+async def test_a_failing_report_never_raises_and_keeps_the_last_one(storage_hass, freezer):
+    controller, _ = await _guarded_controller(storage_hass, freezer)
+    _phases(storage_hass, (6, 7, 8), (1000, 1000, 1000))
+    controller.guard_step(NOW)
+    last = controller.guard_report
+
+    def boom(*_a, **_k):
+        raise RuntimeError("no")
+
+    controller.guard.evaluate = boom
+    controller.guard_step(NOW + timedelta(seconds=1))
+    controller.guard_step(NOW + timedelta(seconds=2))
+    assert controller.guard_report is last
+
+
+async def test_the_tick_writes_no_wallbox_entity(storage_hass, freezer):
+    controller, _ = await _guarded_controller(storage_hass, freezer)
     _phases(storage_hass, (23, 6, 7), (5000, 1000, 900))
     status = await controller.async_tick()
-    assert status.guard is not None and status.guard["import_a"] == 23
-    assert status.result != "error"
     assert not [w for w in status.writes if "wallbox" in w.op.entity_id]
-    assert inverter is not None
+
+
+async def _loaded_entry(hass, mqtt_mock, extra):
+    from pytest_homeassistant_custom_component.common import MockConfigEntry
+
+    from custom_components.hallm_energy.const import DOMAIN
+
+    hass.states.async_set("input_boolean.shadow", "on")
+    hass.states.async_set("input_boolean.grid_recovery", "on")
+    FakeInverter(hass)
+    set_telemetry(hass, soc="50.0")
+    entry = MockConfigEntry(domain=DOMAIN, options={**OPTIONS, **extra})
+    entry.add_to_hass(hass)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done(wait_background_tasks=True)
+    return entry
+
+
+@pytest.mark.parametrize("expected_lingering_timers", [True])
+async def test_the_guard_timer_runs_only_when_phase_sensors_are_configured(
+        storage_hass, mqtt_mock):
+    from homeassistant.util import dt as dt_util
+    from pytest_homeassistant_custom_component.common import async_fire_time_changed
+
+    hass = storage_hass
+    _phases(hass, (6, 7, 8), (1000, 1000, 1000))
+    entry = await _loaded_entry(hass, mqtt_mock, {
+        "phase_current_entities": list(CURRENTS), "phase_power_entities": list(POWERS)})
+    controller = entry.runtime_data.controller
+    controller.guard_report = None
+    async_fire_time_changed(hass, dt_util.utcnow() + timedelta(seconds=2))
+    await hass.async_block_till_done()
+    assert controller.guard_report is not None and controller.guard_report["import_a"] == 8
+    assert await hass.config_entries.async_unload(entry.entry_id)
+
+
+@pytest.mark.parametrize("expected_lingering_timers", [True])
+async def test_without_phase_sensors_the_guard_never_runs(storage_hass, mqtt_mock):
+    from homeassistant.util import dt as dt_util
+    from pytest_homeassistant_custom_component.common import async_fire_time_changed
+
+    hass = storage_hass
+    entry = await _loaded_entry(hass, mqtt_mock, {})
+    controller = entry.runtime_data.controller
+    async_fire_time_changed(hass, dt_util.utcnow() + timedelta(seconds=2))
+    await hass.async_block_till_done()
+    assert controller.guard_report is None
+    assert await hass.config_entries.async_unload(entry.entry_id)

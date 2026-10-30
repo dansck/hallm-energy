@@ -30,6 +30,7 @@ from .const import (
     AUDIT_DELIVERY_INTERVAL,
     CONF_INSTALLATION_ID,
     DOMAIN,
+    GUARD_INTERVAL,
     SERVICE_DISCARD_AUDIT,
     SERVICE_PROVISION,
     SERVICE_REPROVISION,
@@ -153,7 +154,13 @@ def _start_loop(hass: HomeAssistant, entry: ConfigEntry, controller: EnergyContr
         delivery[:] = [entry.async_create_background_task(
             hass, controller.async_deliver_audit(), f"{DOMAIN} audit delivery")]
 
+    @callback
+    def guard(_now=None) -> None:
+        controller.guard_step()
+
     entry.async_on_unload(async_track_time_interval(hass, tick, TICK_INTERVAL))
+    if controller.config.phase_current_entities:
+        entry.async_on_unload(async_track_time_interval(hass, guard, GUARD_INTERVAL))
     entry.async_on_unload(async_track_time_interval(hass, deliver, AUDIT_DELIVERY_INTERVAL))
     entry.async_on_unload(async_track_state_change_event(
         hass, [controller.config.shadow_entity, controller.config.feature_entity], gates_changed

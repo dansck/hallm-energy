@@ -88,7 +88,6 @@ class TickStatus:
     recovery: RecoveryOutcome | None = None
     morning: MorningOutcome | None = None
     floors: dict | None = None  # planned vs actual slot floors (diagnostics only)
-    guard: dict | None = None  # per-phase guard, report only (nothing is written)
 
 
 class EnergyController:
@@ -111,6 +110,8 @@ class EnergyController:
                                       budget_factor=config.budget_factor)
         self.status = TickStatus()
         self.guard = GuardShadow(config)
+        self.guard_report: dict | None = None  # report only: nothing is written
+        self._guard_failing = False
         self.profiles = ProfileReceiver()
         self.pv_forecasts = PvForecastReceiver()
         self.outbox = AuditOutbox(runtime, config.audit_topic, _mqtt_publisher(hass))
@@ -139,10 +140,6 @@ class EnergyController:
             inputs = build_inputs(self.hass, self.config, now)
             status = TickStatus(at=now, live=self.gates.live(), problems=inputs.problems)
             try:
-                status.guard = self.guard.evaluate(self.hass, self.config, now)
-            except Exception:  # a report must never stop the loop
-                _LOGGER.exception("phase guard report failed")
-            try:
                 if self._was_live and not status.live:
                     status.writes += await self.executor.async_release()
                 self._was_live = status.live
@@ -154,6 +151,23 @@ class EnergyController:
             self._notify()
         await self._observe_conditions(status)  # outside the control lock: never delays a cycle
         return status
+
+    def guard_step(self, now: datetime | None = None) -> None:
+        """One phase-guard evaluation, on its own fast timer. Report only; listeners (the status
+        sensor) are told only when the decision changes, not on every new reading."""
+        now = now or dt_util.utcnow()
+        try:
+            report = self.guard.evaluate(self.hass, self.config, now)
+        except Exception:  # a report must never stop anything else
+            if not self._guard_failing:
+                _LOGGER.exception("phase guard report failed")
+            self._guard_failing = True
+            return
+        self._guard_failing = False
+        changed = _guard_decision(report) != _guard_decision(self.guard_report)
+        self.guard_report = report
+        if changed:
+            self._notify()
 
     async def _observe_conditions(self, status: TickStatus) -> None:
         """Owner alerts (`notify_service`) for CRITICAL events only: the grid is gone, or the
@@ -486,6 +500,13 @@ class EnergyController:
             status.error = f"state not persisted: {exc}"
             return False
         return True
+
+
+def _guard_decision(report: dict | None) -> tuple | None:
+    if report is None:
+        return None
+    return (report["ev_current_cap_a"], report["ev_paused"], report["grid_charge_allowed"],
+            report["export_cap_w"], report["restricted"])
 
 
 def _local_outlook(now: datetime, days: int) -> tuple[datetime, datetime]:

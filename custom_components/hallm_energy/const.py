@@ -16,6 +16,7 @@ CONF_INSTALLATION_ID = "installation_id"
 
 # Control loop period; gate changes trigger an extra tick immediately.
 TICK_INTERVAL = timedelta(seconds=30)
+GUARD_INTERVAL = timedelta(seconds=1)  # the phase meter reports about once a second
 
 SERVICE_PROVISION = "provision"
 SERVICE_REPROVISION = "reprovision"
