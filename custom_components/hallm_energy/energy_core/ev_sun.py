@@ -8,7 +8,7 @@ to charge from the sun.
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Collection
 from datetime import datetime, timedelta, tzinfo
 
 STEP = timedelta(minutes=15)
@@ -23,11 +23,13 @@ def first_sun_day(
     tz: tzinfo,
     min_surplus_kw: float,
     min_kwh: float,
+    skip_days: Collection[int] = (),
 ) -> tuple[int | None, float, bool]:
     """`(day, kwh, covered)`: the first local day (0 = today, counted from `start`) whose surplus
     energy reaches `min_kwh`, that energy, and whether the forecast and the profile covered every
     step of the span. `None` for the day when no day qualifies; an uncovered span only ever
-    lowers the result, so a missing forecast never makes the sun look better."""
+    lowers the result, so a missing forecast never makes the sun look better. Days in `skip_days`
+    are not counted: the car is known to be away on them."""
     start_local = start.astimezone(tz)
     today = start_local.date()
     end = (start_local.replace(hour=0, minute=0, second=0, microsecond=0)
@@ -46,6 +48,6 @@ def first_sun_day(
                 per_day[day] = per_day.get(day, 0.0) + surplus * STEP.total_seconds() / 3600.0
         t += STEP
     for day in sorted(per_day):
-        if per_day[day] >= min_kwh:
+        if day not in skip_days and per_day[day] >= min_kwh:
             return day, per_day[day], covered
     return None, 0.0, covered

@@ -51,6 +51,7 @@ CONF_EV_DYNAMIC = "ev_wallbox_dynamic_entity"
 CONF_EV_AC_KWH_PER_PCT = "ev_ac_kwh_per_pct"
 CONF_EV_TRIPS = "ev_daily_trip_pct"
 CONF_EV_MOBILITY_MIN = "ev_mobility_min_pct"
+CONF_EV_ABSOLUTE_MIN = "ev_absolute_min_pct"
 CONF_EV_DEFAULT_TARGET = "ev_default_target_pct"
 CONF_EV_MAX_POWER = "ev_max_power_kw"
 CONF_GUARD_EV_CAP = "guard_ev_cap_a"
@@ -93,6 +94,7 @@ NUMBER_OPTIONS: dict[str, tuple[float, float, float]] = {
     CONF_EV_AC_KWH_PER_PCT: (0.78, 0.3, 1.5),
     CONF_EV_TRIPS: (10.0, 0.0, 50.0),
     CONF_EV_MOBILITY_MIN: (30.0, 10.0, 60.0),
+    CONF_EV_ABSOLUTE_MIN: (10.0, 5.0, 30.0),
     CONF_EV_DEFAULT_TARGET: (80.0, 50.0, 100.0),
     CONF_EV_MAX_POWER: (11.04, 1.4, 22.0),
     CONF_GUARD_EXPORT_CAP: (8000.0, 0.0, 8800.0),
@@ -172,6 +174,7 @@ class EnergyConfig:
     ev_ac_kwh_per_pct: float = NUMBER_OPTIONS[CONF_EV_AC_KWH_PER_PCT][0]
     ev_daily_trip_pct: float = NUMBER_OPTIONS[CONF_EV_TRIPS][0]
     ev_mobility_min_pct: float = NUMBER_OPTIONS[CONF_EV_MOBILITY_MIN][0]
+    ev_absolute_min_pct: float = NUMBER_OPTIONS[CONF_EV_ABSOLUTE_MIN][0]
     ev_default_target_pct: float = NUMBER_OPTIONS[CONF_EV_DEFAULT_TARGET][0]
     ev_max_power_kw: float = NUMBER_OPTIONS[CONF_EV_MAX_POWER][0]
     guard_export_cap_w: float = NUMBER_OPTIONS[CONF_GUARD_EXPORT_CAP][0]
@@ -267,6 +270,8 @@ class EnergyConfig:
             (CONF_EV_SOC_UPDATED, "sensor"), (CONF_EV_LIMIT, "number"))}
         if (ev[CONF_EV_SOC] is None) != (ev[CONF_EV_CONNECTED] is None):
             raise ConfigInvalidError("EV: the SOC sensor and the connected sensor go together")
+        if numbers[CONF_EV_ABSOLUTE_MIN] > numbers[CONF_EV_MOBILITY_MIN]:
+            raise ConfigInvalidError("EV: absolute minimum is above the mobility minimum")
         if numbers[CONF_EV_MOBILITY_MIN] >= numbers[CONF_EV_DEFAULT_TARGET]:
             raise ConfigInvalidError("EV: mobility minimum must be below the default target")
         allow_peak = options.get(CONF_EV_ALLOW_VT, True)
@@ -312,6 +317,7 @@ class EnergyConfig:
             ev_ac_kwh_per_pct=numbers[CONF_EV_AC_KWH_PER_PCT],
             ev_daily_trip_pct=numbers[CONF_EV_TRIPS],
             ev_mobility_min_pct=numbers[CONF_EV_MOBILITY_MIN],
+            ev_absolute_min_pct=numbers[CONF_EV_ABSOLUTE_MIN],
             ev_default_target_pct=numbers[CONF_EV_DEFAULT_TARGET],
             ev_max_power_kw=numbers[CONF_EV_MAX_POWER],
             guard_export_cap_w=numbers[CONF_GUARD_EXPORT_CAP],

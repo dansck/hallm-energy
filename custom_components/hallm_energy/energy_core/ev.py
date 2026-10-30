@@ -126,6 +126,27 @@ def desired_car_limit_pct(
     return ceil10(request_target_pct) if hours_to_deadline <= ahead else None
 
 
+DRIVE_ANSWERS = ("unknown", "yes", "no")
+
+
+def driving_before_window(sun_day: int, drive_tomorrow: str) -> tuple[bool, int, bool]:
+    """`(usable, trip_days, relaxed)` for a window of sun on local day `sun_day` (0 = today).
+
+    The sun only helps when the car is at home at midday. Whether the owner drives to work
+    tomorrow is something only the owner knows: `no` (home office) makes tomorrow's sun usable and
+    lets the car wait down to the absolute minimum (`relaxed`); `unknown` keeps tomorrow's window
+    open but plans for a commute before it; `yes` means the car is away, so tomorrow's window
+    is not usable. Further days are planned with the commutes in between."""
+    if sun_day <= 0:
+        return True, 0, drive_tomorrow == "no"
+    if sun_day == 1:
+        if drive_tomorrow == "yes":
+            return False, 0, False
+        return True, (0 if drive_tomorrow == "no" else 1), drive_tomorrow == "no"
+    trip_days = sun_day - 1 - (1 if drive_tomorrow == "no" else 0)
+    return True, trip_days, drive_tomorrow == "no"
+
+
 def mobility_floor_needed(
     *, soc_pct: float, mobility_min_pct: float, trip_pct_per_day: float, days: float = 1.0
 ) -> bool:

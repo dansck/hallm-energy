@@ -727,13 +727,13 @@ async def test_the_limit_on_the_car_is_never_asked_to_come_back_down(hass):
 # --- wait for sun only when it is coming --------------------------------------------------------
 
 
-async def _sun_state(hass, soc, sun):
+async def _sun_state(hass, soc, sun, drive="unknown"):
     _car(hass, soc=soc)
     _calendar(hass, [])
     shadow = EvShadow(hass, _wallbox_config())
     await shadow.async_refresh_calendar(NOW)
     return shadow.evaluate(NOW, None, True, tariff=lambda d: TariffFacts(True, None, False),
-                           sun=sun)
+                           sun=sun, drive_tomorrow=drive)
 
 
 async def test_with_sun_coming_and_enough_energy_the_car_waits_for_it(hass):
@@ -755,12 +755,29 @@ async def test_without_a_forecast_nobody_waits_for_sun_that_cannot_be_vouched_fo
 
 
 async def test_waiting_for_sun_is_bounded_by_the_energy_for_the_driving_until_then(hass):
-    # sun only the day after tomorrow: 30 % minimum + 3 days of 10 % = 60 %
-    assert (await _sun_state(hass, "55", (2, 22.0, True)))["state"] == "mobility_floor"
-    assert (await _sun_state(hass, "65", (2, 22.0, True)))["state"] == "deferred"
-    # sun today: 30 % + 1 day = 40 %
-    assert (await _sun_state(hass, "35", (0, 12.0, True)))["state"] == "mobility_floor"
-    assert (await _sun_state(hass, "45", (0, 12.0, True)))["state"] == "deferred"
+    # sun the day after tomorrow, a commute in between: 30 % minimum + 1 day of 10 % = 40 %
+    assert (await _sun_state(hass, "35", (2, 22.0, True)))["state"] == "mobility_floor"
+    assert (await _sun_state(hass, "45", (2, 22.0, True)))["state"] == "deferred"
+    # sun today: the car is at home, nothing to drive before it: just the 30 % minimum
+    assert (await _sun_state(hass, "25", (0, 12.0, True)))["state"] == "mobility_floor"
+    assert (await _sun_state(hass, "35", (0, 12.0, True)))["state"] == "deferred"
+
+
+async def test_sun_tomorrow_and_an_unanswered_question_plans_for_a_commute_before_it(hass):
+    assert (await _sun_state(hass, "35", (1, 22.0, True), "unknown"))["state"] == "mobility_floor"
+    assert (await _sun_state(hass, "45", (1, 22.0, True), "unknown"))["state"] == "deferred"
+
+
+async def test_home_office_tomorrow_lets_the_car_wait_for_sun_down_to_the_minimum(hass):
+    # the owner arrives on Sunday with 20 %, stays at home on Monday and the sun shines
+    report = await _sun_state(hass, "20", (1, 22.0, True), "no")
+    assert report["state"] == "deferred" and report["drive_tomorrow"] == "no"
+    assert (await _sun_state(hass, "8", (1, 22.0, True), "no"))["state"] == "mobility_floor"
+
+
+async def test_driving_to_work_tomorrow_means_the_sun_tomorrow_does_not_help(hass):
+    report = await _sun_state(hass, "50", (1, 22.0, True), "yes")
+    assert report["state"] == "routine" and "sun" in report  # hold the level from off-peak
 
 
 async def test_a_request_with_a_deadline_does_not_wait_for_sun(hass):
@@ -772,3 +789,57 @@ async def test_a_request_with_a_deadline_does_not_wait_for_sun(hass):
     report = shadow.evaluate(NOW, None, True, tariff=lambda d: TariffFacts(True, 15.0, True),
                              sun=(1, 22.0, True))
     assert report["state"] == "deadline" and report["grid_charge"]["allowed"] is True
+
+
+# --- the owner's answer: do I drive tomorrow -----------------------------------------------------
+
+
+async def test_the_answer_concerns_tomorrow_and_is_spent_at_midnight(storage_hass, freezer):
+    from datetime import UTC, datetime
+
+    freezer.move_to(datetime(2026, 11, 1, 18, 0, tzinfo=UTC))  # Sunday evening
+    controller = await _controller_with_tariff(
+        storage_hass, freezer, relay="on", schedule=_sched(_iv(-1, 5, True)))
+    freezer.move_to(datetime(2026, 11, 1, 18, 0, tzinfo=UTC))
+    assert controller.drive_answer(datetime(2026, 11, 1, 18, 0, tzinfo=UTC)) == "unknown"
+    controller.ev_drive_tomorrow = "no"
+    controller._drive_for = datetime(2026, 11, 2).date()
+    assert controller.drive_answer(datetime(2026, 11, 1, 18, 0, tzinfo=UTC)) == "no"
+    assert controller.drive_answer(datetime(2026, 11, 2, 12, 0, tzinfo=UTC)) == "unknown"
+
+
+@pytest.mark.parametrize("expected_lingering_timers", [True])
+async def test_the_select_exists_with_the_car_and_the_assistant_can_set_it(storage_hass, mqtt_mock):
+    from pytest_homeassistant_custom_component.common import MockConfigEntry
+
+    from custom_components.hallm_energy.const import DOMAIN
+
+    hass = storage_hass
+    hass.states.async_set("input_boolean.shadow", "on")
+    hass.states.async_set("input_boolean.grid_recovery", "on")
+    FakeInverter(hass)
+    set_telemetry(hass, soc="50.0")
+    _car(hass, soc="60")
+    _calendar(hass, [])
+    entry = MockConfigEntry(domain=DOMAIN, options={
+        **OPTIONS, "ev_soc_entity": SOC, "ev_connected_entity": PLUG})
+    entry.add_to_hass(hass)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done(wait_background_tasks=True)
+    select = next(s for s in hass.states.async_all("select")
+                  if s.entity_id.endswith("ev_drive_tomorrow"))
+    assert select.state == "unknown"
+    await hass.services.async_call("select", "select_option", {
+        "entity_id": select.entity_id, "option": "no"}, blocking=True)
+    controller = entry.runtime_data.controller
+    assert controller.ev_report["drive_tomorrow"] == "no"
+    assert hass.states.get(select.entity_id).state == "no"
+    assert await hass.config_entries.async_unload(entry.entry_id)
+
+
+def test_the_absolute_minimum_cannot_be_above_the_mobility_minimum():
+    with pytest.raises(ConfigInvalidError):
+        EnergyConfig.from_options({**OPTIONS, "ev_soc_entity": SOC, "ev_connected_entity": PLUG,
+                                   "ev_absolute_min_pct": 30, "ev_mobility_min_pct": 20})
+    cfg = EnergyConfig.from_options({**OPTIONS})
+    assert cfg.ev_absolute_min_pct == 10.0 and cfg.ev_mobility_min_pct == 30.0

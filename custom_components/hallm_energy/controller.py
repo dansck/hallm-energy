@@ -23,7 +23,7 @@ import asyncio
 import logging
 from collections.abc import Callable
 from dataclasses import dataclass, field, replace
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from uuid import uuid4
 
 from homeassistant.core import HomeAssistant
@@ -124,6 +124,8 @@ class EnergyController:
             grid_busy=self._grid_charging_busy)
         self.ev_report: dict | None = None  # report only: nothing is written
         self.ev_limit = CarLimitWriter(hass, config, self.gates)
+        self.ev_drive_tomorrow = "unknown"  # the owner's answer, asked by the assistant
+        self._drive_for: date | None = None  # the day the answer is about
         self.ev_force = False  # "must charge": set by a switch, restored by it after a restart
         self.profiles = ProfileReceiver()
         self.pv_forecasts = PvForecastReceiver()
@@ -219,7 +221,30 @@ class EnergyController:
     def _ev_report(self, now: datetime) -> dict | None:
         return self.ev.evaluate(
             now, self.guard_report, self._grid_present(), self.ev_force,
-            lambda deadline: self._tariff_facts(now, deadline), self._sun_outlook(now))
+            lambda deadline: self._tariff_facts(now, deadline), self._sun_outlook(now),
+            self.drive_answer(now))
+
+    def drive_answer(self, now: datetime) -> str:
+        """The owner's answer about driving tomorrow while it still concerns tomorrow; after
+        midnight it is spent and the answer is `unknown` again."""
+        if self._drive_for != dt_util.as_local(now).date() + timedelta(days=1):
+            return "unknown"
+        return self.ev_drive_tomorrow
+
+    async def async_set_ev_drive_tomorrow(self, answer: str) -> None:
+        if answer not in ("unknown", "yes", "no"):
+            raise ValueError(f"not an answer: {answer}")
+        now = dt_util.utcnow()
+        self.ev_drive_tomorrow = answer
+        self._drive_for = dt_util.as_local(now).date() + timedelta(days=1)
+        await self._observe_ev(now)
+        self._notify()
+
+    def restore_ev_drive_tomorrow(self, answer: str, given_at: datetime) -> None:
+        """After a restart: an answer given on day X still counts for X + 1."""
+        if answer in ("yes", "no"):
+            self.ev_drive_tomorrow = answer
+            self._drive_for = dt_util.as_local(given_at).date() + timedelta(days=1)
 
     def _sun_outlook(self, now: datetime) -> tuple[int | None, float, bool] | None:
         """The first day with sun worth waiting for, from the PV forecast and the house profile;
@@ -231,7 +256,8 @@ class EnergyController:
         need_kwh = cfg.ev_daily_trip_pct * cfg.ev_ac_kwh_per_pct
         return first_sun_day(
             pv.kw_at, profile.p50_at, start=now, days=cfg.recovery.outlook_days,
-            tz=dt_util.get_default_time_zone(), min_surplus_kw=MIN_POWER_KW, min_kwh=need_kwh)
+            tz=dt_util.get_default_time_zone(), min_surplus_kw=MIN_POWER_KW, min_kwh=need_kwh,
+            skip_days=(1,) if self.drive_answer(now) == "yes" else ())
 
     async def _observe_ev(self, now: datetime) -> None:
         """The EV report and, when the gate is live, its carrying out. Outside the control lock

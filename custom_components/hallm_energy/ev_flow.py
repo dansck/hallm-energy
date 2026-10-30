@@ -21,6 +21,7 @@ from .energy_core.ev import (
     EvRequest,
     deadline_feasibility,
     desired_car_limit_pct,
+    driving_before_window,
     effective_ev_target_pct,
     ev_state,
     ev_state_unknown_soc,
@@ -151,7 +152,8 @@ class EvShadow:
     def evaluate(self, now: datetime, guard: dict | None, grid_present: bool | None,
                  force: bool = False,
                  tariff: Callable[[datetime | None], TariffFacts] | None = None,
-                 sun: tuple[int | None, float, bool] | None = None
+                 sun: tuple[int | None, float, bool] | None = None,
+                 drive_tomorrow: str = "unknown"
                  ) -> dict[str, Any] | None:
         """`None` when the EV report is not configured."""
         cfg = self.config
@@ -181,6 +183,16 @@ class EvShadow:
             default_target_pct=cfg.ev_default_target_pct)
         curtailed = bool(guard and guard.get("ev_paused")) or grid_present is False
         sun_day = None if sun is None else sun[0]
+        report["drive_tomorrow"] = drive_tomorrow
+        floor_min, trip_days = cfg.ev_mobility_min_pct, 1.0
+        if sun_day is not None:
+            usable, days, relaxed = driving_before_window(sun_day, drive_tomorrow)
+            if not usable:
+                sun_day = None  # the car is away at midday: the sun does not help
+            else:
+                trip_days = float(days)
+                if relaxed:  # the owner stays at home: the car may wait down to the minimum
+                    floor_min = cfg.ev_absolute_min_pct
         if sun is not None:
             report["sun"] = {"first_window_day": sun[0], "window_kwh": round(sun[1], 1),
                              "forecast_covers_span": sun[2]}
@@ -203,9 +215,8 @@ class EvShadow:
                 ev_assist_h=ASSIST_WINDOW_H,
                 battery_assist_eligible=False,
                 mobility_floor_needed=mobility_floor_needed(
-                    soc_pct=soc, mobility_min_pct=cfg.ev_mobility_min_pct,
-                    trip_pct_per_day=cfg.ev_daily_trip_pct,
-                    days=1.0 if sun_day is None else float(sun_day + 1)),
+                    soc_pct=soc, mobility_min_pct=floor_min,
+                    trip_pct_per_day=cfg.ev_daily_trip_pct, days=trip_days),
                 pv_charge_eligible=False,
                 deferred_eligible=sun_day is not None,  # sun is coming: wait for it
                 force_charge=force,
