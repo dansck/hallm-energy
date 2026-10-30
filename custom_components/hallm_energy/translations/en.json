@@ -52,7 +52,11 @@
           "morning_dip_h": "Morning dip window (h)",
           "refill_margin_min": "Refill margin (min)",
           "manage_floors": "Manage slot floors",
-          "audit_topic": "Audit topic"
+          "audit_topic": "Audit topic",
+          "phase_current_entities": "Phase current sensors (RMS, one per phase)",
+          "phase_power_entities": "Phase active power sensors (one per phase, + import / - export)",
+          "guard_ev_cap_a": "Phase guard: normal EV current cap (A)",
+          "guard_export_cap_w": "Phase guard: normal export cap (W)"
         },
         "data_description": {
           "soc_entity": "Sensor with the battery state of charge (%).",
@@ -102,7 +106,11 @@
           "morning_dip_h": "How long before the PV start the dip floor may apply.",
           "refill_margin_min": "Safety margin before the end of useful PV.",
           "manage_floors": "Activation gate for the slot floors: when on AND the shadow switch is off, the integration keeps every slot floor at the planned value (raising always, lowering only with trustworthy inputs, re-checked before each lowering). It does not need the feature switch, so floors can be taken over without allowing grid charging. Off by default; the planned floors are only reported.",
-          "audit_topic": "MQTT topic for the audit events of grants and state changes. A receiver must acknowledge them on the same topic with /ack appended; events stay in a durable outbox until then. Without a topic delivery is paused and the events are kept."
+          "audit_topic": "MQTT topic for the audit events of grants and state changes. A receiver must acknowledge them on the same topic with /ack appended; events stay in a durable outbox until then. Without a topic delivery is paused and the events are kept.",
+          "phase_current_entities": "Phase guard (report only, nothing is written): RMS current per phase, in the same order as the power sensors. Leave both lists empty to disable.",
+          "phase_power_entities": "Phase guard: active power per phase (+ import / - export), same order as the currents.",
+          "guard_ev_cap_a": "Level the EV current cap returns to when the guard releases.",
+          "guard_export_cap_w": "Level the export cap returns to when the guard releases."
         }
       }
     },
@@ -166,7 +174,11 @@
           "morning_dip_h": "Morning dip window (h)",
           "refill_margin_min": "Refill margin (min)",
           "manage_floors": "Manage slot floors",
-          "audit_topic": "Audit topic"
+          "audit_topic": "Audit topic",
+          "phase_current_entities": "Phase current sensors (RMS, one per phase)",
+          "phase_power_entities": "Phase active power sensors (one per phase, + import / - export)",
+          "guard_ev_cap_a": "Phase guard: normal EV current cap (A)",
+          "guard_export_cap_w": "Phase guard: normal export cap (W)"
         },
         "data_description": {
           "soc_entity": "Sensor with the battery state of charge (%).",
@@ -216,7 +228,11 @@
           "morning_dip_h": "How long before the PV start the dip floor may apply.",
           "refill_margin_min": "Safety margin before the end of useful PV.",
           "manage_floors": "Activation gate for the slot floors: when on AND the shadow switch is off, the integration keeps every slot floor at the planned value (raising always, lowering only with trustworthy inputs, re-checked before each lowering). It does not need the feature switch, so floors can be taken over without allowing grid charging. Off by default; the planned floors are only reported.",
-          "audit_topic": "MQTT topic for the audit events of grants and state changes. A receiver must acknowledge them on the same topic with /ack appended; events stay in a durable outbox until then. Without a topic delivery is paused and the events are kept."
+          "audit_topic": "MQTT topic for the audit events of grants and state changes. A receiver must acknowledge them on the same topic with /ack appended; events stay in a durable outbox until then. Without a topic delivery is paused and the events are kept.",
+          "phase_current_entities": "Phase guard (report only, nothing is written): RMS current per phase, in the same order as the power sensors. Leave both lists empty to disable.",
+          "phase_power_entities": "Phase guard: active power per phase (+ import / - export), same order as the currents.",
+          "guard_ev_cap_a": "Level the EV current cap returns to when the guard releases.",
+          "guard_export_cap_w": "Level the export cap returns to when the guard releases."
         }
       }
     },

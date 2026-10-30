@@ -35,6 +35,7 @@ from .const import POLICY_VERSION
 from .device_io import DeviceIO, WriteResult
 from .executor import Gates, GrantExecutor, Snapshot
 from .floor_table import FloorContext, FloorPlan, floor_plan, hold_floor_pct
+from .guard_flow import GuardShadow
 from .inputs import (
     build_inputs,
     offpeak_steps,
@@ -87,6 +88,7 @@ class TickStatus:
     recovery: RecoveryOutcome | None = None
     morning: MorningOutcome | None = None
     floors: dict | None = None  # planned vs actual slot floors (diagnostics only)
+    guard: dict | None = None  # per-phase guard, report only (nothing is written)
 
 
 class EnergyController:
@@ -108,6 +110,7 @@ class EnergyController:
                                       lowering_recheck=self._lowering_inputs_trusted,
                                       budget_factor=config.budget_factor)
         self.status = TickStatus()
+        self.guard = GuardShadow(config)
         self.profiles = ProfileReceiver()
         self.pv_forecasts = PvForecastReceiver()
         self.outbox = AuditOutbox(runtime, config.audit_topic, _mqtt_publisher(hass))
@@ -135,6 +138,10 @@ class EnergyController:
             now = now or dt_util.utcnow()
             inputs = build_inputs(self.hass, self.config, now)
             status = TickStatus(at=now, live=self.gates.live(), problems=inputs.problems)
+            try:
+                status.guard = self.guard.evaluate(self.hass, self.config, now)
+            except Exception:  # a report must never stop the loop
+                _LOGGER.exception("phase guard report failed")
             try:
                 if self._was_live and not status.live:
                     status.writes += await self.executor.async_release()

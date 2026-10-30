@@ -35,6 +35,10 @@ CONF_GRID_RELAY = "grid_relay_entity"
 CONF_AUDIT_TOPIC = "audit_topic"
 CONF_NOTIFY_SERVICE = "notify_service"
 CONF_GRID_VOLTAGE = "grid_voltage_entities"
+CONF_PHASE_CURRENTS = "phase_current_entities"
+CONF_PHASE_POWERS = "phase_power_entities"
+CONF_GUARD_EV_CAP = "guard_ev_cap_a"
+CONF_GUARD_EXPORT_CAP = "guard_export_cap_w"
 CONF_ENABLE_MORNING_DIP = "enable_morning_dip"
 CONF_MANAGE_FLOORS = "manage_floors"
 CONF_OUTLOOK_MARGIN = "outlook_margin_pct"
@@ -68,6 +72,8 @@ NUMBER_OPTIONS: dict[str, tuple[float, float, float]] = {
     CONF_DIP_FLOOR: (10.0, 5.0, 35.0),
     CONF_DIP_H: (3.0, 0.0, 4.0),
     CONF_REFILL_MARGIN: (30.0, 0.0, 120.0),
+    CONF_GUARD_EV_CAP: (16.0, 6.0, 32.0),
+    CONF_GUARD_EXPORT_CAP: (8000.0, 0.0, 8800.0),
 }
 
 
@@ -94,6 +100,14 @@ class ConfigInvalidError(ValueError):
     pass
 
 
+def _sensor_list(options: Mapping[str, Any], key: str) -> tuple[str, ...]:
+    raw = options.get(key) or []
+    if not isinstance(raw, list | tuple) or any(
+            not isinstance(e, str) or not e.startswith("sensor.") for e in raw):
+        raise ConfigInvalidError(f"{key}: expected a list of sensor entities")
+    return tuple(raw)
+
+
 @dataclass(frozen=True)
 class EnergyConfig:
     soc_entity: str
@@ -112,6 +126,10 @@ class EnergyConfig:
     grid_relay_entity: str | None = None
     notify_service: str | None = None
     grid_voltage_entities: tuple[str, ...] = ()
+    phase_current_entities: tuple[str, ...] = ()
+    phase_power_entities: tuple[str, ...] = ()
+    guard_ev_cap_a: float = NUMBER_OPTIONS[CONF_GUARD_EV_CAP][0]
+    guard_export_cap_w: float = NUMBER_OPTIONS[CONF_GUARD_EXPORT_CAP][0]
     enable_morning_dip: bool = False
     manage_floors: bool = False
     floor: FloorParams | None = None
@@ -187,6 +205,11 @@ class EnergyConfig:
                 or any(not isinstance(e, str) or not e.startswith("sensor.")
                        for e in raw_voltage)):
             raise ConfigInvalidError("grid_voltage_entities: expected a list of sensor entities")
+        phase_currents = _sensor_list(options, CONF_PHASE_CURRENTS)
+        phase_powers = _sensor_list(options, CONF_PHASE_POWERS)
+        if len(phase_currents) != len(phase_powers):
+            raise ConfigInvalidError(
+                "phase current and phase power sensors must be given together, one per phase")
         notify_service = options.get(CONF_NOTIFY_SERVICE) or None
         if notify_service is not None and (
                 not isinstance(notify_service, str)
@@ -210,6 +233,10 @@ class EnergyConfig:
             grid_relay_entity=grid_relay,
             notify_service=notify_service,
             grid_voltage_entities=tuple(raw_voltage),
+            phase_current_entities=phase_currents,
+            phase_power_entities=phase_powers,
+            guard_ev_cap_a=numbers[CONF_GUARD_EV_CAP],
+            guard_export_cap_w=numbers[CONF_GUARD_EXPORT_CAP],
             enable_morning_dip=enable_dip,
             manage_floors=manage,
             floor=FloorParams(

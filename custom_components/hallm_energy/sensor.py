@@ -120,6 +120,7 @@ class StatusSensor(SensorEntity):
                 "t_pv_end": None if tick.morning is None or tick.morning.t_pv_end is None
                 else tick.morning.t_pv_end.isoformat(),
                 "floors": tick.floors,
+                "phase_guard": tick.guard,
                 "recovery_action": None if tick.recovery is None else tick.recovery.action,
                 "recovery_action_reason": None if tick.recovery is None
                 else tick.recovery.reason,

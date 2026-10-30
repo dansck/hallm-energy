@@ -23,6 +23,8 @@ from .config import (
     CONF_HDO_SCHEDULE,
     CONF_MANAGE_FLOORS,
     CONF_NOTIFY_SERVICE,
+    CONF_PHASE_CURRENTS,
+    CONF_PHASE_POWERS,
     CONF_PROFILE_TOPIC,
     CONF_PV_TOPIC,
     CONF_SHADOW,
@@ -64,6 +66,9 @@ def _schema() -> vol.Schema:
     fields[vol.Optional(CONF_NOTIFY_SERVICE)] = selector.TextSelector()
     fields[vol.Optional(CONF_GRID_VOLTAGE)] = selector.EntitySelector(
         selector.EntitySelectorConfig(domain="sensor", multiple=True))
+    for key in (CONF_PHASE_CURRENTS, CONF_PHASE_POWERS):
+        fields[vol.Optional(key)] = selector.EntitySelector(
+            selector.EntitySelectorConfig(domain="sensor", multiple=True))
     fields[vol.Required(CONF_ENABLE_MORNING_DIP, default=False)] = selector.BooleanSelector()
     fields[vol.Required(CONF_MANAGE_FLOORS, default=False)] = selector.BooleanSelector()
     fields[vol.Optional(CONF_PROFILE_TOPIC)] = selector.TextSelector()

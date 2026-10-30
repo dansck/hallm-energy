@@ -5,4 +5,4 @@ package): standard library only, relative imports only, no I/O, and no
 references to internal project documents or codes in comments.
 """
 
-CORE_VERSION = "20261027.1"
+CORE_VERSION = "20261030.1"
