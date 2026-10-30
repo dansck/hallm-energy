@@ -23,6 +23,7 @@ from .energy_core.ev import (
     mobility_floor_needed,
     next_request,
 )
+from .energy_core.ev_plan import MIN_POWER_KW, WallboxFacts, plan_ev_intents
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -94,6 +95,21 @@ class EvShadow:
         except (TypeError, ValueError):
             return None, seen
 
+    def _wallbox_facts(self) -> WallboxFacts:
+        cfg, states = self.config, self.hass.states
+
+        def flag(entity: str | None) -> bool | None:
+            state = states.get(entity) if entity else None
+            if state is None or state.state not in ("on", "off"):
+                return None
+            return state.state == "on"
+
+        return WallboxFacts(
+            paused=flag(cfg.ev_wallbox_pause_entity),
+            intensity_a=self._number(cfg.ev_wallbox_intensity_entity)[0],
+            max_intensity_a=self._number(cfg.ev_wallbox_max_intensity_entity)[0],
+            dynamic_on=flag(cfg.ev_wallbox_dynamic_entity))
+
     def evaluate(self, now: datetime, guard: dict | None, grid_present: bool | None,
                  force: bool = False) -> dict[str, Any] | None:
         """`None` when the EV report is not configured."""
@@ -152,6 +168,18 @@ class EvShadow:
         if decision.state == "force_charge":
             cap = guard["ev_current_cap_a"] if guard else cfg.guard_ev_cap_a
             report |= {"tariff_ignored": True, "power": "max", "max_current_a": cap}
+        if cfg.ev_wallbox_pause_entity:
+            facts = self._wallbox_facts()
+            intents, withheld = plan_ev_intents(
+                decision.state, wallbox=facts,
+                cap_a=guard["ev_current_cap_a"] if guard else cfg.guard_ev_cap_a)
+            report["wallbox"] = {
+                "paused": facts.paused, "intensity_a": facts.intensity_a,
+                "max_intensity_a": facts.max_intensity_a, "dynamic_on": facts.dynamic_on,
+                "min_power_kw": round(MIN_POWER_KW, 2)}
+            report["intents"] = [{"target": i.target, "value": i.value, "reason": i.reason}
+                                 for i in intents]
+            report["intents_withheld"] = withheld
         if request is not None:
             energy, hours, feasible = deadline_feasibility(
                 now=now, deadline_at=request.deadline_at, soc_pct=soc,

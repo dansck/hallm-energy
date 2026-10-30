@@ -65,7 +65,11 @@
           "ev_mobility_min_pct": "EV protective minimum (%)",
           "ev_default_target_pct": "EV default charge target (%)",
           "ev_max_power_kw": "EV wallbox maximum power (kW)",
-          "ev_ac_kwh_per_pct": "EV energy per battery percent (kWh at the wallbox)"
+          "ev_ac_kwh_per_pct": "EV energy per battery percent (kWh at the wallbox)",
+          "ev_wallbox_pause_entity": "Wallbox pause switch (optional)",
+          "ev_wallbox_intensity_entity": "Wallbox charging current (optional)",
+          "ev_wallbox_max_intensity_entity": "Wallbox maximum current (optional)",
+          "ev_wallbox_dynamic_entity": "Wallbox dynamic modulation switch (optional)"
         },
         "data_description": {
           "soc_entity": "Sensor with the battery state of charge (%).",
@@ -128,7 +132,11 @@
           "ev_mobility_min_pct": "Never let routine charging wait below this level plus the usual trips.",
           "ev_default_target_pct": "The target when there is no request.",
           "ev_max_power_kw": "Highest charging power of the wallbox, for the feasibility check.",
-          "ev_ac_kwh_per_pct": "Energy the wallbox delivers per 1 % of battery level, losses included. Measured values are about 0.74 above 5 kW and 0.80 below. Used to estimate the energy a request needs."
+          "ev_ac_kwh_per_pct": "Energy the wallbox delivers per 1 % of battery level, losses included. Measured values are about 0.74 above 5 kW and 0.80 below. Used to estimate the energy a request needs.",
+          "ev_wallbox_pause_entity": "With these four, the EV report also shows what would be written to the wallbox (nothing is written yet).",
+          "ev_wallbox_intensity_entity": "The current the wallbox charges with.",
+          "ev_wallbox_max_intensity_entity": "The ceiling for the charging current.",
+          "ev_wallbox_dynamic_entity": "The wallbox follows the surplus on its own but keeps at least its minimum current, so it does not stop when the surplus is small."
         }
       }
     },
@@ -205,7 +213,11 @@
           "ev_mobility_min_pct": "EV protective minimum (%)",
           "ev_default_target_pct": "EV default charge target (%)",
           "ev_max_power_kw": "EV wallbox maximum power (kW)",
-          "ev_ac_kwh_per_pct": "EV energy per battery percent (kWh at the wallbox)"
+          "ev_ac_kwh_per_pct": "EV energy per battery percent (kWh at the wallbox)",
+          "ev_wallbox_pause_entity": "Wallbox pause switch (optional)",
+          "ev_wallbox_intensity_entity": "Wallbox charging current (optional)",
+          "ev_wallbox_max_intensity_entity": "Wallbox maximum current (optional)",
+          "ev_wallbox_dynamic_entity": "Wallbox dynamic modulation switch (optional)"
         },
         "data_description": {
           "soc_entity": "Sensor with the battery state of charge (%).",
@@ -268,7 +280,11 @@
           "ev_mobility_min_pct": "Never let routine charging wait below this level plus the usual trips.",
           "ev_default_target_pct": "The target when there is no request.",
           "ev_max_power_kw": "Highest charging power of the wallbox, for the feasibility check.",
-          "ev_ac_kwh_per_pct": "Energy the wallbox delivers per 1 % of battery level, losses included. Measured values are about 0.74 above 5 kW and 0.80 below. Used to estimate the energy a request needs."
+          "ev_ac_kwh_per_pct": "Energy the wallbox delivers per 1 % of battery level, losses included. Measured values are about 0.74 above 5 kW and 0.80 below. Used to estimate the energy a request needs.",
+          "ev_wallbox_pause_entity": "With these four, the EV report also shows what would be written to the wallbox (nothing is written yet).",
+          "ev_wallbox_intensity_entity": "The current the wallbox charges with.",
+          "ev_wallbox_max_intensity_entity": "The ceiling for the charging current.",
+          "ev_wallbox_dynamic_entity": "The wallbox follows the surplus on its own but keeps at least its minimum current, so it does not stop when the surplus is small."
         }
       }
     },

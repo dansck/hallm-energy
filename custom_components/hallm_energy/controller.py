@@ -541,7 +541,8 @@ def _ev_decision(report: dict | None) -> tuple | None:
         return None
     request = report.get("request") or {}
     return (report["state"], report["reason"], report.get("effective_target_pct"),
-            request.get("deadline_at"), request.get("feasible"), report.get("force_requested"))
+            request.get("deadline_at"), request.get("feasible"), report.get("force_requested"),
+            tuple((i["target"], i["value"]) for i in report.get("intents", ())))
 
 
 def _local_outlook(now: datetime, days: int) -> tuple[datetime, datetime]:

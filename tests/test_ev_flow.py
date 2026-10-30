@@ -284,3 +284,82 @@ async def test_there_is_no_switch_without_the_car(storage_hass, mqtt_mock):
     names = [s.entity_id for s in hass.states.async_all("switch")]
     assert not [n for n in names if n.endswith("ev_must_charge")]
     assert await hass.config_entries.async_unload(entry.entry_id)
+
+
+# --- the wallbox plan ------------------------------------------------------------------------
+
+PAUSE, INTENSITY, MAXI, DYNAMIC = ("switch.wb_pause", "number.wb_intensity", "number.wb_max",
+                                   "switch.wb_dynamic")
+
+
+def _wallbox(hass, *, paused="off", intensity="6", maxi="16", dynamic="off"):
+    hass.states.async_set(PAUSE, paused)
+    hass.states.async_set(INTENSITY, intensity)
+    hass.states.async_set(MAXI, maxi)
+    hass.states.async_set(DYNAMIC, dynamic)
+
+
+def _wallbox_config():
+    return _ev_config(ev_wallbox_pause_entity=PAUSE, ev_wallbox_intensity_entity=INTENSITY,
+                      ev_wallbox_max_intensity_entity=MAXI, ev_wallbox_dynamic_entity=DYNAMIC)
+
+
+def _intents(report):
+    return {(i["target"], i["value"]) for i in report["intents"]}
+
+
+async def test_without_wallbox_entities_the_report_has_no_plan(hass):
+    _car(hass, soc="60")
+    _calendar(hass, [])
+    _, report = await _state(hass)
+    assert "intents" not in report and "wallbox" not in report
+
+
+async def test_a_deferred_car_with_a_running_wallbox_would_be_paused(hass):
+    _car(hass, soc="60")
+    _calendar(hass, [])
+    _wallbox(hass, paused="off")
+    _, report = await _state(hass, config=_wallbox_config())
+    assert report["state"] == "deferred" and _intents(report) == {("pause", True)}
+    assert report["wallbox"]["min_power_kw"] == 4.14 and report["intents_withheld"] is None
+
+
+async def test_a_forced_charge_would_unpause_drop_dynamic_modulation_and_go_full_power(hass):
+    _car(hass, soc="60")
+    _calendar(hass, [])
+    _wallbox(hass, paused="on", intensity="6", dynamic="on")
+    shadow = EvShadow(hass, _wallbox_config())
+    await shadow.async_refresh_calendar(NOW)
+    report = shadow.evaluate(NOW, None, True, force=True)
+    assert report["state"] == "force_charge"
+    assert _intents(report) == {("pause", False), ("dynamic", False), ("intensity", 16.0)}
+
+
+async def test_a_state_that_needs_the_tariff_is_withheld_not_guessed(hass):
+    _car(hass, soc="33")
+    _calendar(hass, [])
+    _wallbox(hass)
+    _, report = await _state(hass, config=_wallbox_config())
+    assert report["state"] == "mobility_floor" and report["intents"] == []
+    assert "not evaluated" in report["intents_withheld"]
+
+
+async def test_the_report_changes_no_wallbox_entity(hass):
+    _car(hass, soc="60")
+    _calendar(hass, [])
+    _wallbox(hass, paused="on", intensity="6", dynamic="on")
+    before = {e: hass.states.get(e).state for e in (PAUSE, INTENSITY, MAXI, DYNAMIC)}
+    shadow = EvShadow(hass, _wallbox_config())
+    await shadow.async_refresh_calendar(NOW)
+    shadow.evaluate(NOW, None, True, force=True)
+    assert {e: hass.states.get(e).state for e in before} == before
+
+
+def test_the_wallbox_entities_are_checked_for_their_kind():
+    with pytest.raises(ConfigInvalidError):
+        EnergyConfig.from_options({**OPTIONS, "ev_soc_entity": SOC, "ev_connected_entity": PLUG,
+                                   "ev_wallbox_pause_entity": "number.x"})
+    cfg = EnergyConfig.from_options({**OPTIONS, "ev_soc_entity": SOC, "ev_connected_entity": PLUG,
+                                     "ev_wallbox_pause_entity": PAUSE,
+                                     "ev_wallbox_intensity_entity": INTENSITY})
+    assert cfg.ev_wallbox_pause_entity == PAUSE and cfg.ev_wallbox_dynamic_entity is None

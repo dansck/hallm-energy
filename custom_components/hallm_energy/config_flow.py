@@ -17,6 +17,10 @@ from .config import (
     CONF_ENABLE_MORNING_DIP,
     CONF_EV_CALENDAR,
     CONF_EV_CONNECTED,
+    CONF_EV_DYNAMIC,
+    CONF_EV_INTENSITY,
+    CONF_EV_MAX_INTENSITY,
+    CONF_EV_PAUSE,
     CONF_EV_SOC,
     CONF_EV_TRACKER,
     CONF_FEATURE,
@@ -74,7 +78,9 @@ def _schema() -> vol.Schema:
         fields[vol.Optional(key)] = selector.EntitySelector(
             selector.EntitySelectorConfig(domain="sensor", multiple=True))
     for key, domain in ((CONF_EV_SOC, "sensor"), (CONF_EV_CONNECTED, "binary_sensor"),
-                        (CONF_EV_TRACKER, "device_tracker"), (CONF_EV_CALENDAR, "calendar")):
+                        (CONF_EV_TRACKER, "device_tracker"), (CONF_EV_CALENDAR, "calendar"),
+                        (CONF_EV_PAUSE, "switch"), (CONF_EV_INTENSITY, "number"),
+                        (CONF_EV_MAX_INTENSITY, "number"), (CONF_EV_DYNAMIC, "switch")):
         fields[vol.Optional(key)] = _entity(domain)
     fields[vol.Required(CONF_ENABLE_MORNING_DIP, default=False)] = selector.BooleanSelector()
     fields[vol.Required(CONF_MANAGE_FLOORS, default=False)] = selector.BooleanSelector()
