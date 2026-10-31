@@ -62,6 +62,7 @@ from .profile_receiver import ProfileReceiver, PvForecastReceiver
 from .recovery_flow import RecoveryInputs, RecoveryOutcome, outlook_status, plan_recovery
 from .runtime import EnergyRuntime
 from .slot_plan import Op, Readback, current_slot, stop_ops
+from .start_gate import StartGate
 from .state_schema import StoreState
 from .store import StoreNotDurableError
 
@@ -111,9 +112,11 @@ class EnergyController:
         self.io = io or DeviceIO(hass)
         self.gates = Gates(hass, shadow_entity=config.shadow_entity,
                            feature_entity=config.feature_entity)
+        self.start_gate = StartGate()
         self.executor = GrantExecutor(runtime, self.io, config.slot_entities, self.gates,
                                       lowering_recheck=self._lowering_inputs_trusted,
-                                      budget_factor=config.budget_factor)
+                                      budget_factor=config.budget_factor,
+                                      start_gate=self.start_gate)
         self.status = TickStatus()
         self.guard = GuardShadow(config)
         self.guard_report: dict | None = None  # report only: nothing is written
@@ -121,7 +124,7 @@ class EnergyController:
         self.ev = EvShadow(hass, config)
         self.ev_exec = EvExecutor(
             DeviceIO(hass, call_timeout_s=10.0, readback_timeout_s=10.0), config, self.gates,
-            grid_busy=self._grid_charging_busy)
+            grid_busy=self._grid_charging_busy, start_gate=self.start_gate)
         self.ev_report: dict | None = None  # report only: nothing is written
         self.ev_limit = CarLimitWriter(hass, config, self.gates)
         self.ev_drive_tomorrow = "unknown"  # the owner's answer, asked by the assistant

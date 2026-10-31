@@ -43,6 +43,7 @@ from .slot_plan import (
     prepare_ops,
     stop_ops,
 )
+from .start_gate import StartGate
 from .state_schema import StoreState
 from .store import StoreNotDurableError
 
@@ -109,7 +110,9 @@ class GrantExecutor:
         recheck: Callable[[], bool] | None = None,
         lowering_recheck: Callable[[], bool] | None = None,
         budget_factor: float = DEFAULT_GRANT_BUDGET_FACTOR,
+        start_gate: StartGate | None = None,
     ) -> None:
+        self.start_gate = start_gate or StartGate()
         self.runtime = runtime
         self.io = io
         self.entities = entities
@@ -153,66 +156,79 @@ class GrantExecutor:
         on); `lowering_ok` = the plan was built from trustworthy inputs, so a floor
         may also be LOWERED (raising is always allowed)."""
         async with self._cycle_lock:
-            report = CycleReport(live=self.gates.live(), floors_live=self.gates.floors_live())
-            state = self.runtime.state
-            if state is None or self.runtime.blocked_reason is not None:
-                report.error = f"runtime blocked: {self.runtime.blocked_reason}"
-                return report
-            rev = self.safety_revision
-            readback = self.io.read_slots(self.entities)
-            active = state.active_grant
+            start_free = self.start_gate.try_acquire()
+            try:
+                return await self._cycle_locked(
+                    snapshot, floor_plan=floor_plan, lowering_ok=lowering_ok,
+                    start_free=start_free)
+            finally:
+                if start_free:
+                    self.start_gate.release()
 
-            if active is not None and active.status in ("prepared", "paused"):
-                target = active.identity.target_pct
-                if not is_prepared(target, readback):
-                    ops = prepare_ops(self.entities, target, readback)
-                    if report.live and self.runtime.may_enable:
-                        report.writes += await self._run(ops, rev, enabling=False)
-                        readback = self.io.read_slots(self.entities)
-                    else:
-                        report.intents += ops
+    async def _cycle_locked(self, snapshot: Snapshot, *, floor_plan: FloorPlan | None,
+                            lowering_ok: bool, start_free: bool) -> CycleReport:
+        """The body of a cycle. `start_free`: the start gate was ours; when the car's writer
+        is starting something, nothing here may enable grid charging this time."""
+        report = CycleReport(live=self.gates.live(), floors_live=self.gates.floors_live())
+        state = self.runtime.state
+        if state is None or self.runtime.blocked_reason is not None:
+            report.error = f"runtime blocked: {self.runtime.blocked_reason}"
+            return report
+        rev = self.safety_revision
+        readback = self.io.read_slots(self.entities)
+        active = state.active_grant
 
-            result = step_grant(
-                state,
-                now=snapshot.now,
-                soc_now_pct=snapshot.soc_pct if snapshot.soc_pct is not None else 0.0,
-                reading=snapshot.reading,
-                reading_epoch=snapshot.reading_epoch,
-                telemetry_valid=snapshot.telemetry_valid and snapshot.soc_pct is not None,
-                is_nt=snapshot.is_nt,
-                deye_prepared=_prepared_for(state, readback),
-                safety_revision=rev,
-                observed_before={"grid_charge": readback.grid_charge},
-                budget_factor=self.budget_factor,
-                hold_reason=snapshot.hold_reason,
-            )
-            report.charge_enable, report.reason = result.charge_enable, result.reason
-            new_state, step_id = result.state, result.step_id
-            if step_id is not None and not (report.live and self.runtime.may_enable):
-                report.intents += self._enable_ops(new_state, snapshot)
-                new_state = replace(new_state, pending_step=state.pending_step)
-                step_id = None
-
-            # Stopping first, persisting second: a stop never waits for the disk.
-            if not result.charge_enable and readback.charging_enabled is not False:
-                if report.live:
-                    report.writes += await self.async_safety_stop()
+        if active is not None and active.status in ("prepared", "paused"):
+            target = active.identity.target_pct
+            if not is_prepared(target, readback):
+                ops = prepare_ops(self.entities, target, readback)
+                if report.live and self.runtime.may_enable:
+                    report.writes += await self._run(ops, rev, enabling=False)
                     readback = self.io.read_slots(self.entities)
                 else:
-                    report.intents += stop_ops(self.entities)
+                    report.intents += ops
 
-            if not await self._commit(new_state, report):
-                return report
-            if step_id is not None:
-                await self._enable(step_id, rev, snapshot, report)
-            await self._close_if_stopped(snapshot.now, report)
-            if floor_plan is None:
-                await self._restore_floors(report)
+        result = step_grant(
+            state,
+            now=snapshot.now,
+            soc_now_pct=snapshot.soc_pct if snapshot.soc_pct is not None else 0.0,
+            reading=snapshot.reading,
+            reading_epoch=snapshot.reading_epoch,
+            telemetry_valid=snapshot.telemetry_valid and snapshot.soc_pct is not None,
+            is_nt=snapshot.is_nt,
+            deye_prepared=_prepared_for(state, readback),
+            safety_revision=rev,
+            observed_before={"grid_charge": readback.grid_charge},
+            budget_factor=self.budget_factor,
+            hold_reason=snapshot.hold_reason or (None if start_free else "ev_starting"),
+        )
+        report.charge_enable, report.reason = result.charge_enable, result.reason
+        new_state, step_id = result.state, result.step_id
+        if step_id is not None and not (report.live and self.runtime.may_enable):
+            report.intents += self._enable_ops(new_state, snapshot)
+            new_state = replace(new_state, pending_step=state.pending_step)
+            step_id = None
+
+        # Stopping first, persisting second: a stop never waits for the disk.
+        if not result.charge_enable and readback.charging_enabled is not False:
+            if report.live:
+                report.writes += await self.async_safety_stop()
+                readback = self.io.read_slots(self.entities)
             else:
-                await self._apply_floor_plan(floor_plan, lowering_ok, report)
-            return report
+                report.intents += stop_ops(self.entities)
 
-    # --- internals ---------------------------------------------------------------------
+        if not await self._commit(new_state, report):
+            return report
+        if step_id is not None:
+            await self._enable(step_id, rev, snapshot, report)
+        await self._close_if_stopped(snapshot.now, report)
+        if floor_plan is None:
+            await self._restore_floors(report)
+        else:
+            await self._apply_floor_plan(floor_plan, lowering_ok, report)
+        return report
+
+# --- internals ---------------------------------------------------------------------
 
     def _enable_ops(self, state: StoreState, snapshot: Snapshot) -> list[Op]:
         active = state.active_grant

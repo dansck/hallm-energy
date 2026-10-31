@@ -549,3 +549,118 @@ async def test_through_the_controller_a_forced_charge_asks_for_the_load_mode_fir
     assert controller.ev_report["state"] == "force_charge"
     assert controller.ev_report["wallbox"]["deye_mode"] == TO_CT
     assert device.calls[:1] == [(DEYE, TO_LOAD)] and device.calls[-1] == (PAUSE, False)
+
+
+# --- review 43 ------------------------------------------------------------------------------------
+
+
+async def test_the_inverter_is_handed_back_only_when_the_wallbox_reads_paused_right_then(
+        storage_hass, device):
+    _wallbox(storage_hass, paused="off")  # still running
+    storage_hass.states.async_set(DEYE, TO_LOAD)
+    report = _report("away", [_step("deye_mode", TO_CT, "restore")])
+    out = await _deye_executor(storage_hass).async_apply(
+        report, now=NOW, recheck=lambda: None)
+    assert out.result == "aborted" and "not confirmed paused" in out.reason
+    assert device.calls == [] and device.value(DEYE) == TO_LOAD
+    _wallbox(storage_hass, paused="on")
+    out = await _deye_executor(storage_hass).async_apply(report, now=NOW, recheck=lambda: None)
+    assert out.result == "done" and device.value(DEYE) == TO_CT
+
+
+async def test_an_unknown_position_of_a_running_charge_pauses_it_before_anything_goes_back(
+        storage_hass, device):
+    _wallbox(storage_hass, paused="off", intensity="16", dynamic="off")
+    storage_hass.states.async_set(DEYE, TO_LOAD)
+    cfg = replace(_config(ev_deye_mode_entity=DEYE), ev_soc_entity=SOC, ev_connected_entity=PLUG,
+                  ev_tracker_entity="device_tracker.car")
+    controller = await _live_controller(storage_hass, config=cfg)
+    controller.ev_exec = _deye_executor(storage_hass)
+    storage_hass.states.async_set("device_tracker.car", "unavailable")  # the tracker drops out
+    await controller.async_ev_cycle()
+    assert controller.ev_report["state"] == "away"
+    assert device.calls == [(PAUSE, True), (DEYE, TO_CT)]
+
+
+async def test_a_pause_that_is_refused_keeps_the_inverter_on_load_for_an_unknown_position(
+        storage_hass, device):
+    _wallbox(storage_hass, paused="off", intensity="16", dynamic="off")
+    storage_hass.states.async_set(DEYE, TO_LOAD)
+    device.reject.add((PAUSE, True))
+    cfg = replace(_config(ev_deye_mode_entity=DEYE), ev_soc_entity=SOC, ev_connected_entity=PLUG,
+                  ev_tracker_entity="device_tracker.car")
+    controller = await _live_controller(storage_hass, config=cfg)
+    controller.ev_exec = _deye_executor(storage_hass)
+    storage_hass.states.async_set("device_tracker.car", "unavailable")
+    await controller.async_ev_cycle()
+    assert (DEYE, TO_CT) not in device.calls and device.value(DEYE) == TO_LOAD
+
+
+async def test_grid_charging_that_begins_during_the_preparation_stops_the_start(
+        storage_hass, device):
+    busy = {"on": False}
+    device.after[(DYNAMIC, False)] = lambda: busy.__setitem__("on", True)
+    _wallbox(storage_hass, paused="on", intensity="12", maxi="12", dynamic="on")
+    executor = _executor_with(storage_hass, grid_busy=lambda: busy["on"])
+    plan = [_step("dynamic", False), _step("pause", False, "enable")]
+    report = _report("routine", plan)
+    out = await executor.async_apply(report, now=NOW, recheck=_same(report))
+    assert out.result == "held" and "grid charging" in out.reason
+    assert (PAUSE, False) not in device.calls and device.value(PAUSE) == "on"
+
+
+async def test_the_gate_closing_during_the_sequence_stops_it(storage_hass, device):
+    device.after[(DYNAMIC, False)] = lambda: storage_hass.states.async_set(
+        CONFIG.shadow_entity, "on")
+    _wallbox(storage_hass, paused="on", intensity="12", maxi="12", dynamic="on")
+    executor = _executor_with(storage_hass)
+    plan = [_step("dynamic", False), _step("pause", False, "enable")]
+    report = _report("routine", plan)
+    out = await executor.async_apply(report, now=NOW, recheck=_same(report))
+    assert out.result == "aborted" and out.reason == "the gate closed"
+    assert (PAUSE, False) not in device.calls
+
+
+def _executor_with(hass, grid_busy=None, start_gate=None):
+    cfg = _config()
+    io = DeviceIO(hass, call_timeout_s=0.3, readback_timeout_s=0.3, poll_interval_s=0.02)
+    return EvExecutor(io, cfg, Gates(hass, shadow_entity=cfg.shadow_entity,
+                                     feature_entity=cfg.feature_entity),
+                      grid_busy=grid_busy, start_gate=start_gate)
+
+
+async def test_the_car_does_not_start_while_the_house_battery_is_starting(storage_hass, device):
+    from custom_components.hallm_energy.start_gate import StartGate
+
+    gate = StartGate()
+    assert gate.try_acquire()  # the grant writer is in the middle of starting
+    executor = _executor_with(storage_hass, start_gate=gate)
+    report = _report()
+    out = await executor.async_apply(report, now=NOW, recheck=_same(report))
+    assert out.result == "held" and "starting" in out.reason and device.calls == []
+    pause = await executor.async_apply(_report("curtailed", [_step("pause", True, "protect")]),
+                                       now=NOW, recheck=lambda: None)
+    assert pause.result == "done"  # a protective step never asks for the gate
+    gate.release()
+    _wallbox(storage_hass)
+    ok = await executor.async_apply(report, now=NOW, recheck=_same(report))
+    assert ok.result == "done" and gate.held is False  # taken and given back
+
+
+async def test_the_gate_is_given_back_after_every_outcome(storage_hass, device):
+    from custom_components.hallm_energy.start_gate import StartGate
+
+    gate = StartGate()
+    executor = _executor_with(storage_hass, start_gate=gate)
+    device.reject.add((INTENSITY, 16.0))
+    report = _report()
+    out = await executor.async_apply(report, now=NOW, recheck=_same(report))
+    assert out.result == "aborted" and gate.held is False
+
+
+async def test_both_writers_share_one_gate(storage_hass, device):
+    from tests.test_controller import _controller, _fresh_state
+
+    controller = await _controller(storage_hass, _fresh_state(), live=True)  # as in production
+    assert controller.executor.start_gate is controller.ev_exec.start_gate
+    assert controller.executor.start_gate is controller.start_gate

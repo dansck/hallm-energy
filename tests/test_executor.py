@@ -718,3 +718,21 @@ async def test_an_external_hold_switches_charging_off_and_it_resumes_when_the_ho
     assert executor.runtime.state.manual_block is None
     await executor.async_cycle(_snapshot(minutes=45))
     assert inverter.value(GRID) == "on"
+
+
+async def test_the_grant_does_not_start_while_the_car_is_starting(storage_hass, inverter):
+    executor = await _executor(storage_hass)
+    assert executor.start_gate.try_acquire()  # the wallbox writer is in the middle of starting
+    held = await executor.async_cycle(_snapshot())
+    assert held.reason == "ev_starting" and inverter.value(GRID) == "off"
+    assert executor.start_gate.held is True  # not ours: left alone
+    executor.start_gate.release()
+    resumed = await executor.async_cycle(_snapshot(minutes=1))
+    assert inverter.value(GRID) == "on" and executor.start_gate.held is False
+    assert resumed is not None
+
+
+async def test_the_grant_gives_the_gate_back_after_its_cycle(storage_hass, inverter):
+    executor = await _executor(storage_hass)
+    await executor.async_cycle(_snapshot())
+    assert executor.start_gate.held is False

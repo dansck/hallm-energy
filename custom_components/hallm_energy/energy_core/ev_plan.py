@@ -122,16 +122,20 @@ def _full_power(
             steps.append(EvIntent(
                 "deye_mode", MODE_TO_LOAD,
                 "charging from the grid must not drain the house battery"))
+    current_a, ceiling_a = wallbox.intensity_a, wallbox.max_intensity_a
+    # nothing may exceed the new limit at any moment: lower first, then the modulation goes off
+    # (it would release the old setting), then raise: the ceiling before the current
+    if current_a > limit_a:
+        steps.append(EvIntent("intensity", float(limit_a), "lower to the limit in force"))
+    if ceiling_a > limit_a:
+        steps.append(EvIntent("max_intensity", float(limit_a), "ceiling in force"))
     if wallbox.dynamic_on:
         steps.append(EvIntent(
             "dynamic", False, "full power: dynamic modulation would hold the minimum"))
-    ceiling = EvIntent("max_intensity", float(limit_a), "ceiling in force")
-    current = EvIntent("intensity", float(limit_a), "full power")
-    # lowering: the current first, then the ceiling; raising: the ceiling first
-    ordered = [current, ceiling] if limit_a < wallbox.max_intensity_a else [ceiling, current]
-    steps += [i for i in ordered
-              if (wallbox.max_intensity_a if i.target == "max_intensity"
-                  else wallbox.intensity_a) != i.value]
+    if ceiling_a < limit_a:
+        steps.append(EvIntent("max_intensity", float(limit_a), "ceiling in force"))
+    if current_a < limit_a:
+        steps.append(EvIntent("intensity", float(limit_a), "full power"))
     if wallbox.paused:
         steps.append(EvIntent("pause", False, "forced charge", "enable"))
     return tuple(steps), None
@@ -163,7 +167,9 @@ def plan_ev_intents(
     charging. A state whose plan depends on things not evaluated here (surplus, battery) gives
     no intents and says why."""
     if state == "away":
-        return _restore(wallbox), None
+        # not at home, or not known to be: never trust that alone to say the car draws nothing, so
+        # pause first; the inverter goes back only after the pause is confirmed
+        return _pause(wallbox, "the car is not known to be at home")
     if state == "curtailed":
         return _pause(wallbox, "protection or grid outage")
     if state in ("idle", "deferred"):

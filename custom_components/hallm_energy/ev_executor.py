@@ -11,6 +11,11 @@ A step is a write that is confirmed by reading the value back. Rules:
 * the first step that is not confirmed stops the sequence, so nothing after a failed preparation
   (in particular the un-pause) is ever written;
 * a step whose value is already in place is skipped;
+* the start gate is taken for the whole non-protective sequence, and just before every such step
+  the writer checks again that it is still allowed and that the house battery is not charging
+  from the grid: nothing that was true at the start of the sequence is trusted at its end;
+* handing the battery back (`restore`) needs the wallbox to read paused right then: nothing but
+  a confirmed pause says the car draws nothing;
 * nothing is enabled while the house battery is charged from the grid (a grant running or being
   prepared): the two loads would add up on the main breaker, and the phase guard is the last line
   of defence, not the plan;
@@ -32,6 +37,7 @@ from .config import EnergyConfig
 from .device_io import DeviceIO, WriteResult
 from .executor import Gates
 from .slot_plan import Op
+from .start_gate import StartGate
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -50,8 +56,10 @@ class EvWriteReport:
 
 class EvExecutor:
     def __init__(self, io: DeviceIO, config: EnergyConfig, gates: Gates,
-                 grid_busy: Callable[[], bool] | None = None) -> None:
+                 grid_busy: Callable[[], bool] | None = None,
+                 start_gate: StartGate | None = None) -> None:
         self.io, self.config, self.gates = io, config, gates
+        self.start_gate = start_gate or StartGate()
         self._grid_busy = grid_busy or (lambda: False)
         self._lock = asyncio.Lock()
         self._epoch = 0
@@ -119,6 +127,21 @@ class EvExecutor:
         elif self._retry_at is not None and now < self._retry_at:
             out.result, out.reason = "backoff", "waiting after a failed write"
             return out
+        gate_taken = False
+        if not protective:
+            gate_taken = self.start_gate.try_acquire()
+            if not gate_taken:
+                out.result = "held"
+                out.reason = "the house battery is starting to charge from the grid"
+                return out
+        try:
+            return await self._run(report, intents, out, now, recheck, protective)
+        finally:
+            if gate_taken:
+                self.start_gate.release()
+
+    async def _run(self, report: dict, intents: list, out: EvWriteReport, now: datetime,
+                   recheck: Callable[[], dict | None], protective: bool) -> EvWriteReport:
         async with self._lock:
             epoch = self._epoch
             for step in intents:
@@ -132,7 +155,18 @@ class EvExecutor:
                     return out
                 if self.io.read(entity) == value:
                     continue
+                if step["phase"] == "restore":
+                    pause_entity = self._entity("pause")
+                    if pause_entity is None or self.io.read(pause_entity) is not True:
+                        out.result, out.reason = "aborted", "the wallbox is not confirmed paused"
+                        return out
                 if step["phase"] not in ("protect", "restore"):
+                    if not self.live():
+                        out.result, out.reason = "aborted", "the gate closed"
+                        return out
+                    if self._grid_busy():
+                        out.result, out.reason = "held", "grid charging of the house battery began"
+                        return out
                     fresh = recheck()
                     still = fresh is not None and fresh.get("state") == report.get("state") and any(
                         s["target"] == step["target"] and s["value"] == value
