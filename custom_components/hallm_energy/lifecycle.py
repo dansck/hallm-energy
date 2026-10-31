@@ -327,6 +327,7 @@ def step_grant(
     observed_before: Mapping[str, Any] | None = None,
     budget_factor: float = DEFAULT_GRANT_BUDGET_FACTOR,
     max_charge_rate_kw: float = DEFAULT_MAX_CHARGE_RATE_KW,
+    hold_reason: str | None = None,
 ) -> StepResult:
     """One evaluation cycle. Enabling requires provisioning `ready`, reconcile
     `ready` and confirmed inverter preparation, and only PROPOSES a step
@@ -364,6 +365,7 @@ def step_grant(
         counter_trusted=update.trusted,
         counter_distrust_reason=update.reason,
         budget_factor=budget_factor,
+        hold_reason=hold_reason,
     )
     working = replace(active, usage=usage)
     audit = state.pending_audit

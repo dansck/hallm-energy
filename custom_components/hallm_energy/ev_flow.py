@@ -46,6 +46,7 @@ SOC_UNUSABLE_AFTER = timedelta(hours=24)
 CLOCK_SKEW = timedelta(minutes=5)  # a reading from the future beyond this is not believed
 ASSIST_WINDOW_H = 3.0
 TOPUP_MARGIN_H = 1.0  # the final top-up ends about this long before the departure
+GRID_CHARGE_EV_CAP_A = 12.0  # the wallbox ceiling while the house battery charges from the grid
 LIMIT_LEAD_H = 0.25  # the car limit goes up this long before the top-up has to start
 
 
@@ -153,7 +154,8 @@ class EvShadow:
                  force: bool = False,
                  tariff: Callable[[datetime | None], TariffFacts] | None = None,
                  sun: tuple[int | None, float, bool] | None = None,
-                 drive_tomorrow: str = "unknown"
+                 drive_tomorrow: str = "unknown",
+                 grid_charging: bool = False
                  ) -> dict[str, Any] | None:
         """`None` when the EV report is not configured."""
         cfg = self.config
@@ -284,6 +286,8 @@ class EvShadow:
                     cap_a = min([cap_a, *now_a]) if now_a else None
             else:  # a configured guard that has not reported leaves the ceiling unknown
                 cap_a = None if cfg.phase_current_entities else cfg.guard_ev_cap_a
+            if grid_charging and cap_a is not None:
+                cap_a = min(cap_a, GRID_CHARGE_EV_CAP_A)  # both loads share the main breaker
             intents, withheld = plan_ev_intents(
                 decision.state, wallbox=facts, cap_a=cap_a, tariff=facts_tariff,
                 hours_needed=hours_needed, allow_peak_for_deadline=cfg.ev_deadline_allow_peak,

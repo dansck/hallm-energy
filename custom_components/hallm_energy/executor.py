@@ -57,6 +57,7 @@ class Snapshot:
     reading_epoch: str
     is_nt: Callable[[datetime], bool]
     slot_starts: tuple[time, ...] | None = None  # read from the inverter; None = defaults
+    hold_reason: str | None = None  # something outside forbids grid charging for now
 
 
 class Gates:
@@ -183,6 +184,7 @@ class GrantExecutor:
                 safety_revision=rev,
                 observed_before={"grid_charge": readback.grid_charge},
                 budget_factor=self.budget_factor,
+                hold_reason=snapshot.hold_reason,
             )
             report.charge_enable, report.reason = result.charge_enable, result.reason
             new_state, step_id = result.state, result.step_id

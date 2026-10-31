@@ -50,8 +50,8 @@ class GuardShadow:
     def __init__(self, config: EnergyConfig) -> None:
         self._state = PhaseGuardState(config.guard_ev_cap_a, False, True, config.guard_export_cap_w)
 
-    def evaluate(self, hass: HomeAssistant, config: EnergyConfig, now: datetime
-                 ) -> dict[str, Any] | None:
+    def evaluate(self, hass: HomeAssistant, config: EnergyConfig, now: datetime,
+                 ev_charging: bool = True) -> dict[str, Any] | None:
         """`None` when the guard is not configured."""
         if not config.phase_current_entities:
             return None
@@ -65,6 +65,7 @@ class GuardShadow:
             max_export_phase_a=worst_export,
             default_export_cap_w=config.guard_export_cap_w,
             default_ev_current_cap_a=config.guard_ev_cap_a,
+            ev_charging=ev_charging,
         )
         self._state = decision.next_state
         stale = reading.measured_at is None or (

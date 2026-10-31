@@ -697,3 +697,19 @@ async def test_closing_the_shadow_gate_between_two_lowerings_ends_the_series_but
                                         lowering_ok=True)
     assert _written(inverter) == [(CAPS[0], 20.0)]
     assert "floor lowering stopped: not_live" in report.error
+
+
+async def test_an_external_hold_switches_charging_off_and_it_resumes_when_the_hold_ends(
+        storage_hass, inverter):
+    from dataclasses import replace
+
+    executor = await _executor(storage_hass)
+    await executor.async_cycle(_snapshot())
+    assert inverter.value(GRID) == "on"
+    held = replace(_snapshot(minutes=30), hold_reason="guard_phase_overload")
+    report = await executor.async_cycle(held)
+    assert report.reason == "guard_phase_overload" and inverter.value(GRID) == "off"
+    assert executor.runtime.state.active_grant.status == "paused"
+    assert executor.runtime.state.manual_block is None
+    await executor.async_cycle(_snapshot(minutes=45))
+    assert inverter.value(GRID) == "on"

@@ -410,3 +410,68 @@ async def test_the_car_limit_is_never_lowered(storage_hass, device):
     writer = _limit_writer(storage_hass)
     writer.request(90.0, NOW)
     assert writer.last_result == "in place" and device.calls == []
+
+
+# --- the guard and the grant: the last bit of the breaker protection ------------------------------
+
+
+def _guard_report(**over):
+    base = {"stale": False, "ev_current_cap_a": 16.0, "ev_paused": False,
+            "grid_charge_allowed": True, "export_cap_w": 8000.0, "restricted": False}
+    return {**base, **over}
+
+
+async def test_the_grant_is_held_only_while_the_guard_forbids_grid_charging_or_is_blind(
+        storage_hass, device):
+    controller = await _live_controller(storage_hass)
+    assert controller._grant_hold_reason() is None  # the guard has not reported yet
+    controller.guard_report = _guard_report()
+    assert controller._grant_hold_reason() is None
+    controller.guard_report = _guard_report(grid_charge_allowed=False)
+    assert controller._grant_hold_reason() == "guard_phase_overload"
+    controller.guard_report = _guard_report(stale=True)
+    assert controller._grant_hold_reason() == "guard_stale"
+    controller.config = replace(controller.config, phase_current_entities=())
+    assert controller._grant_hold_reason() is None  # no guard configured: nothing holds
+
+
+async def test_the_guard_counts_the_car_as_charging_only_when_plugged_in_and_not_paused(
+        storage_hass, device):
+    controller = await _live_controller(storage_hass)
+    storage_hass.states.async_set(PAUSE, "off")
+    assert controller._ev_charging() is True
+    storage_hass.states.async_set(PAUSE, "on")
+    assert controller._ev_charging() is False
+    storage_hass.states.async_set(PAUSE, "off")
+    storage_hass.states.async_set(PLUG, "off")
+    assert controller._ev_charging() is False
+
+
+async def test_a_guard_that_forbids_grid_charging_triggers_a_cycle_at_once(storage_hass, device):
+    controller = await _live_controller(storage_hass)
+    storage_hass.states.async_set(controller.config.grid_charge_entity, "on")
+    ticks: list[int] = []
+
+    async def fake_tick(*_a, **_k):
+        ticks.append(1)
+
+    controller.async_tick = fake_tick
+    controller.guard.evaluate = lambda *_a, **_k: _guard_report(grid_charge_allowed=False,
+                                                                 restricted=True)
+    controller.guard_step(NOW)
+    await storage_hass.async_block_till_done()
+    assert ticks == [1]
+    controller.guard_step(NOW)  # nothing changed: no second cycle
+    await storage_hass.async_block_till_done()
+    assert ticks == [1]
+
+
+async def test_while_the_battery_charges_from_the_grid_the_car_is_capped_at_twelve_amps(
+        storage_hass, device):
+    _wallbox(storage_hass, paused="off", intensity="16", dynamic="off")
+    controller = await _live_controller(storage_hass)
+    controller.ev_force = True
+    storage_hass.states.async_set(controller.config.grid_charge_entity, "on")
+    await controller.async_ev_cycle()
+    steps = {(i["target"], i["value"]) for i in controller.ev_report["intents"]}
+    assert ("intensity", 12.0) in steps and ("max_intensity", 12.0) in steps

@@ -750,3 +750,24 @@ def test_external_stop_also_sets_the_block():
     result = rec(on_startup(activated()), on=False)
     assert result.state.manual_block is not None
     assert result.state.manual_block.reason == "external_stop"
+
+
+def test_an_external_hold_pauses_an_active_grant_without_closing_or_blocking_it():
+    active = activated(reading=reading(7205.0, T0 + timedelta(minutes=15)))
+    result = step(active, now=T0 + timedelta(minutes=30),
+                  reading=reading(7205.0, T0 + timedelta(minutes=30)),
+                  hold_reason="guard_phase_overload")
+    assert result.charge_enable is False and result.reason == "guard_phase_overload"
+    grant = result.state.active_grant
+    assert grant.status == "paused" and grant.reason_code == "guard_phase_overload"
+    assert result.state.manual_block is None  # not an outside intervention
+
+
+def test_after_the_hold_ends_a_paused_grant_proposes_enabling_again():
+    active = activated(reading=reading(7205.0, T0 + timedelta(minutes=15)))
+    held = step(active, now=T0 + timedelta(minutes=30),
+                reading=reading(7205.0, T0 + timedelta(minutes=30)),
+                hold_reason="guard_phase_overload")
+    resumed = step(held.state, now=T0 + timedelta(minutes=45),
+                   reading=reading(7205.0, T0 + timedelta(minutes=45)))
+    assert resumed.charge_enable is True and resumed.step_id is not None

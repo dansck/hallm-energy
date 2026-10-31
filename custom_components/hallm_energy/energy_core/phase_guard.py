@@ -52,8 +52,11 @@ class PhaseGuardDecision:
 
 
 def _step_import_branch(
-    cap_a: float, paused: bool, grid_on: bool, *, min_a: float, step_a: float
+    cap_a: float, paused: bool, grid_on: bool, *, min_a: float, step_a: float,
+    ev_charging: bool = True,
 ) -> tuple[float, bool, bool]:
+    if not ev_charging:  # the car draws nothing: lowering its current cannot help
+        return cap_a, paused, False
     if paused:
         return cap_a, True, False  # next level after the pause: grid charging off
     if cap_a - step_a >= min_a:
@@ -85,6 +88,7 @@ def phase_guard(
     trip_hold_s: float = TRIP_HOLD_S,
     release_hold_s: float = RELEASE_HOLD_S,
     stale_s: float = STALE_S,
+    ev_charging: bool = True,
 ) -> PhaseGuardDecision:
     """One evaluation step.
 
@@ -93,7 +97,8 @@ def phase_guard(
     the export branch). Every `trip_hold_s` of continued excess takes one more step; the
     release steps back every `release_hold_s` below `release_a`. With stale or missing
     data the restriction in force is kept, but the timers are dropped: a gap without
-    trustworthy data breaks continuity, so it never counts towards a release.
+    trustworthy data breaks continuity, so it never counts towards a release. When the car is not
+    charging (`ev_charging` false) its stages are skipped: grid charging is the first thing to go.
     """
     stale = (now - measured_at).total_seconds() > stale_s
     if stale or max_import_phase_a is None or max_export_phase_a is None:
@@ -119,10 +124,11 @@ def phase_guard(
         import_over_since = import_over_since or now
         if (now - import_over_since).total_seconds() >= trip_hold_s:
             cap_a, paused, grid_on = _step_import_branch(
-                cap_a, paused, grid_on, min_a=EV_CURRENT_MIN_A, step_a=EV_CURRENT_STEP_A
+                cap_a, paused, grid_on, min_a=EV_CURRENT_MIN_A, step_a=EV_CURRENT_STEP_A,
+                ev_charging=ev_charging,
             )
             import_over_since = now
-            if paused and not grid_on:
+            if not grid_on and (paused or not ev_charging):
                 notify = True
     elif max_import_phase_a < release_a:
         import_over_since = None

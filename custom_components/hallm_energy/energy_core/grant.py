@@ -264,6 +264,7 @@ def evaluate_grant(
     counter_trusted: bool = True,
     counter_distrust_reason: str | None = None,
     budget_factor: float = DEFAULT_GRANT_BUDGET_FACTOR,
+    hold_reason: str | None = None,
 ) -> GrantDecision:
     """Whether the grant currently allows charging, with a reason.
 
@@ -274,7 +275,9 @@ def evaluate_grant(
     because the SOC stop does not depend on the DC counter; then trust in the
     counter itself — without it the budget backup cannot be evaluated safely,
     so only pause (NOT close) keeping `used_dc_kwh`/checkpoint; then the budget
-    backup; then scheduling (window and live off-peak membership of `now`)."""
+    backup; then an external hold (`hold_reason`: something outside the grant, such as the phase
+    guard, forbids charging for now: a pause, never a close, and charging resumes when it ends);
+    then scheduling (window and live off-peak membership of `now`)."""
     if not telemetry_valid:
         return GrantDecision(False, False, "telemetry_stale")
     if grant_target_reached(grant, soc_now_pct):
@@ -283,6 +286,8 @@ def evaluate_grant(
         return GrantDecision(False, False, counter_distrust_reason or "counter_untrusted")
     if grant_budget_exhausted(grant, used_dc_kwh, budget_factor):
         return GrantDecision(False, True, "budget_exhausted")
+    if hold_reason is not None:
+        return GrantDecision(False, False, hold_reason)
     if not (grant.window.start <= now < grant.window.end):  # half-open interval
         return GrantDecision(False, False, "outside_window")
     if not is_nt(now):

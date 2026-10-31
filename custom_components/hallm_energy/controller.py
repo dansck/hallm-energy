@@ -158,7 +158,8 @@ class EnergyController:
                 if self._was_live and not status.live:
                     status.writes += await self.executor.async_release()
                 self._was_live = status.live
-                await self._step(inputs.snapshot, status)
+                await self._step(
+                    replace(inputs.snapshot, hold_reason=self._grant_hold_reason()), status)
             except Exception as exc:  # the loop must survive; nothing enables after it
                 _LOGGER.exception("tick failed")
                 status.result, status.error = "error", repr(exc)
@@ -173,7 +174,7 @@ class EnergyController:
         sensor) are told only when the decision changes, not on every new reading."""
         now = now or dt_util.utcnow()
         try:
-            report = self.guard.evaluate(self.hass, self.config, now)
+            report = self.guard.evaluate(self.hass, self.config, now, self._ev_charging())
         except Exception:  # a report must never stop anything else
             if not self._guard_failing:
                 _LOGGER.exception("phase guard report failed")
@@ -184,6 +185,33 @@ class EnergyController:
         self.guard_report = report
         if changed:
             self._notify()
+            if self._grant_hold_reason() is not None and self._grid_charging_busy():
+                # grid charging has to stop now, not at the next tick
+                self.hass.async_create_background_task(
+                    self.async_tick(), "hallm_energy guard hold")
+
+    def _ev_charging(self) -> bool:
+        """The car is plugged in and the wallbox is not paused: it may be drawing power."""
+        cfg = self.config
+        if not cfg.ev_connected_entity:
+            return False
+        plugged = self.hass.states.get(cfg.ev_connected_entity)
+        paused = self.hass.states.get(cfg.ev_wallbox_pause_entity) if cfg.ev_wallbox_pause_entity \
+            else None
+        return plugged is not None and plugged.state == "on" and (
+            paused is None or paused.state != "on")
+
+    def _grant_hold_reason(self) -> str | None:
+        """Why grid charging may not run right now although a grant allows it: the phase guard
+        forbids it, or its measurements are gone. Without a configured guard nothing holds."""
+        report = self.guard_report
+        if not self.config.phase_current_entities or report is None:
+            return None
+        if report.get("stale"):
+            return "guard_stale"
+        if not report["grid_charge_allowed"]:
+            return "guard_phase_overload"
+        return None
 
     def _tariff_facts(self, now: datetime, deadline: datetime | None) -> TariffFacts:
         """Off-peak now needs the relay and the schedule to agree; off-peak time until a deadline
@@ -213,8 +241,9 @@ class EnergyController:
     def _grid_charging_busy(self) -> bool:
         """The house battery is being charged from the grid, or a grant is on its way to."""
         state = self.runtime.state
-        if state is not None and (state.active_grant is not None
-                                  or state.pending_step is not None):
+        if state is not None and (
+                state.pending_step is not None
+                or (state.active_grant is not None and state.active_grant.status == "active")):
             return True
         return self.io.read(self.config.grid_charge_entity) is not False
 
@@ -222,7 +251,7 @@ class EnergyController:
         return self.ev.evaluate(
             now, self.guard_report, self._grid_present(), self.ev_force,
             lambda deadline: self._tariff_facts(now, deadline), self._sun_outlook(now),
-            self.drive_answer(now))
+            self.drive_answer(now), self._grid_charging_busy())
 
     def drive_answer(self, now: datetime) -> str:
         """The owner's answer about driving tomorrow while it still concerns tomorrow; after
