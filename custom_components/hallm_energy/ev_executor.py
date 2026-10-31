@@ -76,6 +76,7 @@ class EvExecutor:
             "intensity": cfg.ev_wallbox_intensity_entity,
             "max_intensity": cfg.ev_wallbox_max_intensity_entity,
             "dynamic": cfg.ev_wallbox_dynamic_entity,
+            "deye_mode": cfg.ev_deye_mode_entity,
         }.get(target)
 
     def _held(self, report: dict, now: datetime) -> str | None:
@@ -105,7 +106,8 @@ class EvExecutor:
         if not out.live:
             out.result = "shadow"
             return out
-        protective = intents[0].get("phase") == "protect"
+        # pausing and handing the battery back are steps in the safe direction
+        protective = intents[0].get("phase") in ("protect", "restore")
         if protective:
             self._epoch += 1  # whatever is in flight stops at its next check
         elif self._lock.locked():
@@ -130,7 +132,7 @@ class EvExecutor:
                     return out
                 if self.io.read(entity) == value:
                     continue
-                if step["phase"] != "protect":
+                if step["phase"] not in ("protect", "restore"):
                     fresh = recheck()
                     still = fresh is not None and fresh.get("state") == report.get("state") and any(
                         s["target"] == step["target"] and s["value"] == value

@@ -45,7 +45,7 @@ class SlotEntities:
 @dataclass(frozen=True)
 class Op:
     entity_id: str
-    value: bool | float
+    value: bool | float | str
 
 
 @dataclass(frozen=True)
@@ -119,8 +119,12 @@ def stop_ops(entities: SlotEntities) -> list[Op]:
     ]
 
 
-def matches(op: Op, value: bool | float | None) -> bool:
+def matches(op: Op, value: bool | float | str | None) -> bool:
     if value is None:
+        return False
+    if isinstance(op.value, str):
+        return value == op.value
+    if isinstance(value, str):
         return False
     if isinstance(op.value, bool):
         return value is op.value

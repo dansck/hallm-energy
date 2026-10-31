@@ -48,6 +48,7 @@ CONF_EV_PAUSE = "ev_wallbox_pause_entity"
 CONF_EV_INTENSITY = "ev_wallbox_intensity_entity"
 CONF_EV_MAX_INTENSITY = "ev_wallbox_max_intensity_entity"
 CONF_EV_DYNAMIC = "ev_wallbox_dynamic_entity"
+CONF_EV_DEYE_MODE = "ev_deye_mode_entity"
 CONF_EV_AC_KWH_PER_PCT = "ev_ac_kwh_per_pct"
 CONF_EV_TRIPS = "ev_daily_trip_pct"
 CONF_EV_MOBILITY_MIN = "ev_mobility_min_pct"
@@ -171,6 +172,7 @@ class EnergyConfig:
     ev_wallbox_intensity_entity: str | None = None
     ev_wallbox_max_intensity_entity: str | None = None
     ev_wallbox_dynamic_entity: str | None = None
+    ev_deye_mode_entity: str | None = None
     ev_ac_kwh_per_pct: float = NUMBER_OPTIONS[CONF_EV_AC_KWH_PER_PCT][0]
     ev_daily_trip_pct: float = NUMBER_OPTIONS[CONF_EV_TRIPS][0]
     ev_mobility_min_pct: float = NUMBER_OPTIONS[CONF_EV_MOBILITY_MIN][0]
@@ -267,7 +269,8 @@ class EnergyConfig:
             (CONF_EV_TRACKER, "device_tracker"), (CONF_EV_CALENDAR, "calendar"),
             (CONF_EV_PAUSE, "switch"), (CONF_EV_INTENSITY, "number"),
             (CONF_EV_MAX_INTENSITY, "number"), (CONF_EV_DYNAMIC, "switch"),
-            (CONF_EV_SOC_UPDATED, "sensor"), (CONF_EV_LIMIT, "number"))}
+            (CONF_EV_SOC_UPDATED, "sensor"), (CONF_EV_LIMIT, "number"),
+            (CONF_EV_DEYE_MODE, "select"))}
         if (ev[CONF_EV_SOC] is None) != (ev[CONF_EV_CONNECTED] is None):
             raise ConfigInvalidError("EV: the SOC sensor and the connected sensor go together")
         if numbers[CONF_EV_ABSOLUTE_MIN] > numbers[CONF_EV_MOBILITY_MIN]:
@@ -314,6 +317,7 @@ class EnergyConfig:
             ev_wallbox_intensity_entity=ev[CONF_EV_INTENSITY],
             ev_wallbox_max_intensity_entity=ev[CONF_EV_MAX_INTENSITY],
             ev_wallbox_dynamic_entity=ev[CONF_EV_DYNAMIC],
+            ev_deye_mode_entity=ev[CONF_EV_DEYE_MODE],
             ev_ac_kwh_per_pct=numbers[CONF_EV_AC_KWH_PER_PCT],
             ev_daily_trip_pct=numbers[CONF_EV_TRIPS],
             ev_mobility_min_pct=numbers[CONF_EV_MOBILITY_MIN],

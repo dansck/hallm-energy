@@ -30,6 +30,8 @@ from .energy_core.ev import (
 )
 from .energy_core.ev_plan import (
     MIN_POWER_KW,
+    MODE_TO_CT,
+    MODE_TO_LOAD,
     TariffFacts,
     WallboxFacts,
     grid_charge_gate,
@@ -121,7 +123,13 @@ class EvShadow:
                 return None
             return state.state == "on"
 
+        mode = None
+        if cfg.ev_deye_mode_entity:
+            state = states.get(cfg.ev_deye_mode_entity)
+            if state is not None and state.state in (MODE_TO_LOAD, MODE_TO_CT):
+                mode = state.state
         return WallboxFacts(
+            deye_mode=mode, deye_mode_managed=bool(cfg.ev_deye_mode_entity),
             paused=flag(cfg.ev_wallbox_pause_entity),
             intensity_a=self._number(cfg.ev_wallbox_intensity_entity)[0],
             max_intensity_a=self._number(cfg.ev_wallbox_max_intensity_entity)[0],
@@ -295,6 +303,7 @@ class EvShadow:
             report["wallbox"] = {
                 "paused": facts.paused, "intensity_a": facts.intensity_a,
                 "max_intensity_a": facts.max_intensity_a, "dynamic_on": facts.dynamic_on,
+                "deye_mode": facts.deye_mode,
                 "min_power_kw": round(MIN_POWER_KW, 2)}
             report["intents"] = [
                 {"target": i.target, "value": i.value, "reason": i.reason, "phase": i.phase}

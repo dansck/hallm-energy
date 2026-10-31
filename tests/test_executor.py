@@ -47,6 +47,7 @@ class FakeInverter:
         hass.services.async_register("switch", "turn_on", self._switch(True))
         hass.services.async_register("switch", "turn_off", self._switch(False))
         hass.services.async_register("number", "set_value", self._set_value)
+        hass.services.async_register("select", "select_option", self._select_option)
 
     async def _apply(self, entity_id, value, state):
         key = (entity_id, value)
@@ -70,6 +71,10 @@ class FakeInverter:
     async def _set_value(self, call):
         value = float(call.data["value"])
         await self._apply(call.data["entity_id"], value, str(value))
+
+    async def _select_option(self, call):
+        option = call.data["option"]
+        await self._apply(call.data["entity_id"], option, option)
 
     def value(self, entity_id):
         return self.hass.states.get(entity_id).state

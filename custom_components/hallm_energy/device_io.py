@@ -26,6 +26,7 @@ WriteOutcome = Literal["confirmed", "failed", "unknown"]
 
 _BOOL_DOMAINS = {"switch", "input_boolean"}
 _NUMBER_DOMAINS = {"number", "input_number"}
+_SELECT_DOMAINS = {"select", "input_select"}
 
 
 @dataclass(frozen=True)
@@ -49,11 +50,13 @@ class DeviceIO:
         self.readback_timeout_s = readback_timeout_s
         self.poll_interval_s = poll_interval_s
 
-    def read(self, entity_id: str) -> bool | float | None:
+    def read(self, entity_id: str) -> bool | float | str | None:
         state = self.hass.states.get(entity_id)
         if state is None or state.state in (STATE_UNAVAILABLE, STATE_UNKNOWN):
             return None
         domain = entity_id.split(".", 1)[0]
+        if domain in _SELECT_DOMAINS:
+            return state.state
         if domain in _BOOL_DOMAINS:
             return {"on": True, "off": False}.get(state.state)
         try:
@@ -109,14 +112,18 @@ class DeviceIO:
             await asyncio.sleep(self.poll_interval_s)
 
 
-def _service_for(op: Op) -> tuple[str, str, dict[str, float]]:
+def _service_for(op: Op) -> tuple[str, str, dict[str, float | str]]:
     domain = op.entity_id.split(".", 1)[0]
+    if domain in _SELECT_DOMAINS:
+        if not isinstance(op.value, str):
+            raise ValueError(f"{op.entity_id}: select needs a string value")
+        return domain, "select_option", {"option": op.value}
     if domain in _BOOL_DOMAINS:
         if not isinstance(op.value, bool):
             raise ValueError(f"{op.entity_id}: switch needs a bool value")
         return domain, "turn_on" if op.value else "turn_off", {}
     if domain in _NUMBER_DOMAINS:
-        if isinstance(op.value, bool):
+        if isinstance(op.value, bool | str):
             raise ValueError(f"{op.entity_id}: number needs a numeric value")
         return domain, "set_value", {"value": op.value}
     raise ValueError(f"{op.entity_id}: unsupported domain '{domain}'")

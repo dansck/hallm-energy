@@ -22,8 +22,11 @@ PHASES = 3
 VOLTAGE_V = 230.0
 MIN_POWER_KW = PHASES * VOLTAGE_V * MIN_CURRENT_A / 1000.0  # 4.14 kW
 
-IntentTarget = Literal["pause", "intensity", "max_intensity", "dynamic"]
-IntentPhase = Literal["protect", "prepare", "enable"]
+MODE_TO_LOAD = "Zero export to load"  # the house battery covers the backup output only
+MODE_TO_CT = "Zero export to CT"  # the house battery also covers what the grid side draws
+
+IntentTarget = Literal["pause", "intensity", "max_intensity", "dynamic", "deye_mode"]
+IntentPhase = Literal["protect", "prepare", "enable", "restore"]
 _UNPLANNED = ("battery_assist", "pv_charge")
 _GRID_STATES = ("mobility_floor", "routine", "deadline")
 
@@ -74,6 +77,8 @@ class WallboxFacts:
     intensity_a: float | None = None
     max_intensity_a: float | None = None
     dynamic_on: bool | None = None
+    deye_mode: str | None = None  # one of the two modes above; `None` = unknown or another mode
+    deye_mode_managed: bool = False  # the inverter mode is part of the plan
 
 
 @dataclass(frozen=True)
@@ -82,15 +87,24 @@ class EvIntent:
     (pausing) first, then `prepare` (mode, ceiling, current), then `enable` (un-pausing) last."""
 
     target: IntentTarget
-    value: bool | float
+    value: bool | float | str
     reason: str
     phase: IntentPhase = "prepare"
 
 
+def _restore(wallbox: WallboxFacts) -> tuple[EvIntent, ...]:
+    """Back to the house battery covering the grid side, once the car has stopped drawing."""
+    if wallbox.deye_mode_managed and wallbox.deye_mode == MODE_TO_LOAD:
+        return (EvIntent("deye_mode", MODE_TO_CT, "the car is not charging from the grid",
+                         "restore"),)
+    return ()
+
+
 def _pause(wallbox: WallboxFacts, reason: str) -> tuple[tuple[EvIntent, ...], str | None]:
-    if wallbox.paused is True:
-        return (), None
-    return (EvIntent("pause", True, reason, "protect"),), None  # unknown counts as not paused
+    pause = ()
+    if wallbox.paused is not True:  # unknown counts as not paused
+        pause = (EvIntent("pause", True, reason, "protect"),)
+    return pause + _restore(wallbox), None
 
 
 def _full_power(
@@ -101,6 +115,13 @@ def _full_power(
     if None in (wallbox.paused, wallbox.intensity_a, wallbox.max_intensity_a, wallbox.dynamic_on):
         return (), "wallbox state incomplete"
     steps: list[EvIntent] = []
+    if wallbox.deye_mode_managed:
+        if wallbox.deye_mode is None:
+            return (), "inverter mode unknown"
+        if wallbox.deye_mode == MODE_TO_CT:
+            steps.append(EvIntent(
+                "deye_mode", MODE_TO_LOAD,
+                "charging from the grid must not drain the house battery"))
     if wallbox.dynamic_on:
         steps.append(EvIntent(
             "dynamic", False, "full power: dynamic modulation would hold the minimum"))
@@ -142,7 +163,7 @@ def plan_ev_intents(
     charging. A state whose plan depends on things not evaluated here (surplus, battery) gives
     no intents and says why."""
     if state == "away":
-        return (), None
+        return _restore(wallbox), None
     if state == "curtailed":
         return _pause(wallbox, "protection or grid outage")
     if state in ("idle", "deferred"):

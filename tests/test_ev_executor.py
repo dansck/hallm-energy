@@ -475,3 +475,77 @@ async def test_while_the_battery_charges_from_the_grid_the_car_is_capped_at_twel
     await controller.async_ev_cycle()
     steps = {(i["target"], i["value"]) for i in controller.ev_report["intents"]}
     assert ("intensity", 12.0) in steps and ("max_intensity", 12.0) in steps
+
+
+# --- the inverter mode follows the car -----------------------------------------------------------
+
+DEYE = "select.deye_mode"
+TO_CT, TO_LOAD = "Zero export to CT", "Zero export to load"
+
+
+def _deye_executor(hass, grid_busy=None):
+    cfg = _config(ev_deye_mode_entity=DEYE)
+    io = DeviceIO(hass, call_timeout_s=0.3, readback_timeout_s=0.3, poll_interval_s=0.02)
+    return EvExecutor(io, cfg, Gates(hass, shadow_entity=cfg.shadow_entity,
+                                     feature_entity=cfg.feature_entity), grid_busy=grid_busy)
+
+
+async def test_the_inverter_is_switched_to_load_before_the_wallbox_is_unpaused(
+        storage_hass, device):
+    storage_hass.states.async_set(DEYE, TO_CT)
+    plan = [_step("deye_mode", TO_LOAD), _step("pause", False, "enable")]
+    report = _report("routine", plan)
+    out = await _deye_executor(storage_hass).async_apply(report, now=NOW, recheck=_same(report))
+    assert out.result == "done"
+    assert device.calls == [(DEYE, TO_LOAD), (PAUSE, False)]
+    assert device.value(DEYE) == TO_LOAD
+
+
+@pytest.mark.parametrize("mode", ["reject", "ignore"])
+async def test_a_failed_mode_switch_never_leads_to_an_unpause(storage_hass, device, mode):
+    storage_hass.states.async_set(DEYE, TO_CT)
+    getattr(device, mode).add((DEYE, TO_LOAD))
+    plan = [_step("deye_mode", TO_LOAD), _step("pause", False, "enable")]
+    report = _report("routine", plan)
+    out = await _deye_executor(storage_hass).async_apply(report, now=NOW, recheck=_same(report))
+    assert out.result == "aborted" and (PAUSE, False) not in device.calls
+    assert device.value(PAUSE) == "on"
+
+
+async def test_the_inverter_goes_back_to_ct_only_after_the_pause_is_confirmed(storage_hass, device):
+    _wallbox(storage_hass, paused="off")
+    storage_hass.states.async_set(DEYE, TO_LOAD)
+    plan = [_step("pause", True, "protect"), _step("deye_mode", TO_CT, "restore")]
+    report = _report("idle", plan)
+    out = await _deye_executor(storage_hass).async_apply(report, now=NOW, recheck=_same(report))
+    assert out.result == "done" and device.calls == [(PAUSE, True), (DEYE, TO_CT)]
+    # a pause that is not confirmed leaves the inverter where it is
+    device.calls.clear()
+    _wallbox(storage_hass, paused="off")
+    storage_hass.states.async_set(DEYE, TO_LOAD)
+    device.ignore.add((PAUSE, True))
+    out = await _deye_executor(storage_hass).async_apply(report, now=NOW, recheck=_same(report))
+    assert out.result == "aborted" and (DEYE, TO_CT) not in device.calls
+
+
+async def test_handing_the_battery_back_is_not_held_by_a_running_grant(storage_hass, device):
+    storage_hass.states.async_set(DEYE, TO_LOAD)
+    plan = [_step("deye_mode", TO_CT, "restore")]
+    report = _report("idle", plan)
+    out = await _deye_executor(storage_hass, grid_busy=lambda: True).async_apply(
+        report, now=NOW, recheck=_same(report))
+    assert out.result == "done" and device.value(DEYE) == TO_CT
+
+
+async def test_through_the_controller_a_forced_charge_asks_for_the_load_mode_first(
+        storage_hass, device):
+    _wallbox(storage_hass, paused="on", intensity="16", dynamic="off")
+    storage_hass.states.async_set(DEYE, TO_CT)
+    cfg = replace(_config(ev_deye_mode_entity=DEYE), ev_soc_entity=SOC, ev_connected_entity=PLUG)
+    controller = await _live_controller(storage_hass, config=cfg)
+    controller.ev_exec = _deye_executor(storage_hass)
+    controller.ev_force = True
+    await controller.async_ev_cycle()
+    assert controller.ev_report["state"] == "force_charge"
+    assert controller.ev_report["wallbox"]["deye_mode"] == TO_CT
+    assert device.calls[:1] == [(DEYE, TO_LOAD)] and device.calls[-1] == (PAUSE, False)
