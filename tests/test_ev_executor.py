@@ -664,3 +664,111 @@ async def test_both_writers_share_one_gate(storage_hass, device):
     controller = await _controller(storage_hass, _fresh_state(), live=True)  # as in production
     assert controller.executor.start_gate is controller.ev_exec.start_gate
     assert controller.executor.start_gate is controller.start_gate
+
+
+# --- the audit of the car's writes ------------------------------------------------------------
+
+
+def _audited_executor(hass, sink):
+    cfg = _config(ev_deye_mode_entity=DEYE)
+    io = DeviceIO(hass, call_timeout_s=0.3, readback_timeout_s=0.3, poll_interval_s=0.02)
+    return EvExecutor(io, cfg, Gates(hass, shadow_entity=cfg.shadow_entity,
+                                     feature_entity=cfg.feature_entity), audit=sink.extend)
+
+
+async def test_every_write_is_recorded_with_what_it_was_and_how_it_ended(storage_hass, device):
+    storage_hass.states.async_set(DEYE, TO_CT)
+    sink: list[dict] = []
+    plan = [_step("deye_mode", TO_LOAD), _step("pause", False, "enable")]
+    report = _report("routine", plan)
+    out = await _audited_executor(storage_hass, sink).async_apply(
+        report, now=NOW, recheck=_same(report))
+    assert out.result == "done"
+    assert [(e["kind"], e["target"], e["value"], e["outcome"], e["ev_state"]) for e in sink] == [
+        ("ev_write", "deye_mode", TO_LOAD, "confirmed", "routine"),
+        ("ev_write", "pause", False, "confirmed", "routine")]
+    assert sink[0]["entity_id"] == DEYE
+
+
+async def test_a_failed_write_and_the_stop_of_its_sequence_are_both_recorded(
+        storage_hass, device):
+    storage_hass.states.async_set(DEYE, TO_CT)
+    device.reject.add((DEYE, TO_LOAD))
+    sink: list[dict] = []
+    plan = [_step("deye_mode", TO_LOAD), _step("pause", False, "enable")]
+    report = _report("routine", plan)
+    await _audited_executor(storage_hass, sink).async_apply(report, now=NOW, recheck=_same(report))
+    kinds = [(e["kind"], e.get("outcome"), e.get("result")) for e in sink]
+    assert kinds == [("ev_write", "failed", None), ("ev_sequence", None, "aborted")]
+    assert sink[-1]["reason"] == "deye_mode failed"
+
+
+async def test_holds_and_idle_outcomes_are_not_audit_events(storage_hass, device):
+    sink: list[dict] = []
+    executor = _audited_executor(storage_hass, sink)
+    await executor.async_apply(_report(intents=[]), now=NOW, recheck=lambda: None)
+    gate_closed = _executor_with(storage_hass)
+    gate_closed.config = replace(gate_closed.config, manage_ev=False)
+    report = _report()
+    await gate_closed.async_apply(report, now=NOW, recheck=_same(report))
+    held = _audited_executor(storage_hass, sink)
+    held._grid_busy = lambda: True
+    await held.async_apply(report, now=NOW, recheck=_same(report))
+    assert sink == []
+
+
+async def test_the_car_limit_write_is_recorded(storage_hass, device):
+    storage_hass.states.async_set(LIMIT, "80")
+    sink: list[dict] = []
+    writer = _limit_writer(storage_hass)
+    writer._audit = sink.extend
+    writer.request(100.0, NOW)
+    await writer._task
+    assert [(e["kind"], e["value"], e["outcome"]) for e in sink] == [
+        ("ev_limit_write", 100.0, "confirmed")]
+
+
+async def test_recorded_events_reach_the_durable_audit_stamped(storage_hass, device):
+    controller = await _live_controller(storage_hass)
+    before = len(controller.runtime.state.pending_audit)
+    controller.queue_ev_audit([{"kind": "ev_write", "target": "pause", "value": True,
+                                "outcome": "confirmed"}])
+    await storage_hass.async_block_till_done(wait_background_tasks=True)
+    events = controller.runtime.state.pending_audit
+    assert len(events) == before + 1
+    event = events[-1]
+    assert event.event_id.startswith("ev_write:") and event.payload["target"] == "pause"
+    assert event.payload["installation_id"] and event.payload["policy_version"]  # stamped
+
+
+async def test_when_the_outbox_is_nearly_full_the_car_leaves_the_room_to_the_grants(
+        storage_hass, device):
+    from custom_components.hallm_energy import controller as controller_module
+
+    controller = await _live_controller(storage_hass)
+    now = len(controller.runtime.state.pending_audit)
+    controller_module.EV_AUDIT_RESERVE = controller_module.AUDIT_CAPACITY - now  # no room at all
+    try:
+        controller.queue_ev_audit([{"kind": "ev_write", "outcome": "confirmed"}])
+        await storage_hass.async_block_till_done(wait_background_tasks=True)
+    finally:
+        controller_module.EV_AUDIT_RESERVE = 100
+    assert len(controller.runtime.state.pending_audit) == now
+    assert controller.ev_audit_dropped == 1
+
+
+async def test_a_decision_is_recorded_when_it_changes_and_a_flapping_input_is_rate_limited(
+        storage_hass, device):
+    controller = await _live_controller(storage_hass)
+    controller.queue_ev_audit = lambda payloads: sink.extend(payloads)
+    sink: list[dict] = []
+    base = {"state": "routine", "reason": None, "grid_charge": {"allowed": True},
+            "effective_target_pct": 80.0, "force_requested": False}
+    controller._audit_ev_decision(base, NOW)
+    controller._audit_ev_decision(dict(base), NOW + timedelta(seconds=1))  # unchanged: nothing
+    controller._audit_ev_decision({**base, "state": "idle"}, NOW + timedelta(seconds=2))
+    assert [e["ev_state"] for e in sink] == ["routine", "idle"]
+    for i in range(40):  # a flapping gate
+        flap = {**base, "grid_charge": {"allowed": bool(i % 2)}}
+        controller._audit_ev_decision(flap, NOW + timedelta(seconds=10 + i))
+    assert len(sink) == 20 and controller.ev_audit_dropped > 0

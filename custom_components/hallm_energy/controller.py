@@ -29,7 +29,7 @@ from uuid import uuid4
 from homeassistant.core import HomeAssistant
 from homeassistant.util import dt as dt_util
 
-from .audit_outbox import AuditOutbox
+from .audit_outbox import AUDIT_CAPACITY, AuditOutbox
 from .config import EnergyConfig
 from .const import POLICY_VERSION
 from .device_io import DeviceIO, WriteResult
@@ -50,6 +50,7 @@ from .inputs import (
 )
 from .lifecycle import (
     GrantTransitionError,
+    add_audit_events,
     provision,
     reconcile,
     reprovision,
@@ -74,6 +75,8 @@ class ProvisionError(Exception):
     pass
 
 
+EV_AUDIT_RESERVE = 100  # outbox places the car never uses: the grants keep them
+EV_DECISION_EVENTS_PER_HOUR = 20
 GRID_OUTAGE_AFTER = timedelta(minutes=1)      # a flicker of the relay is not an outage
 GRID_VOLTAGE_AFTER = timedelta(seconds=30)    # an excursion that lasts, not a single sample
 GRID_VOLTAGE_MIN_V, GRID_VOLTAGE_MAX_V = 210.0, 245.0
@@ -124,9 +127,13 @@ class EnergyController:
         self.ev = EvShadow(hass, config)
         self.ev_exec = EvExecutor(
             DeviceIO(hass, call_timeout_s=10.0, readback_timeout_s=10.0), config, self.gates,
-            grid_busy=self._grid_charging_busy, start_gate=self.start_gate)
+            grid_busy=self._grid_charging_busy, start_gate=self.start_gate,
+            audit=self.queue_ev_audit)
         self.ev_report: dict | None = None  # report only: nothing is written
-        self.ev_limit = CarLimitWriter(hass, config, self.gates)
+        self.ev_limit = CarLimitWriter(hass, config, self.gates, audit=self.queue_ev_audit)
+        self._ev_audit_key: tuple | None = None
+        self._ev_audit_times: list[datetime] = []
+        self.ev_audit_dropped = 0
         self.ev_drive_tomorrow = "unknown"  # the owner's answer, asked by the assistant
         self._drive_for: date | None = None  # the day the answer is about
         self.ev_force = False  # "must charge": set by a switch, restored by it after a restart
@@ -250,6 +257,59 @@ class EnergyController:
             return True
         return self.io.read(self.config.grid_charge_entity) is not False
 
+    def queue_ev_audit(self, payloads: list[dict]) -> None:
+        """The car's writes and decisions go into the same durable audit as the grants'. Recorded
+        in the background under the control lock, so the wallbox is never held up by it."""
+        if payloads:
+            self.hass.async_create_background_task(
+                self._record_ev_audit(payloads), "hallm_energy EV audit")
+
+    async def _record_ev_audit(self, payloads: list[dict]) -> None:
+        async with self._lock:
+            state = self.runtime.state
+            if state is None or self.runtime.blocked_reason is not None:
+                self.ev_audit_dropped += len(payloads)
+                return
+            now = dt_util.utcnow()
+            events = [(f"{p['kind']}:{uuid4().hex}", p) for p in payloads]
+            new = add_audit_events(state, events, now, limit=AUDIT_CAPACITY - EV_AUDIT_RESERVE)
+            if new is state:
+                self.ev_audit_dropped += len(payloads)
+                return
+            try:
+                await self.runtime.async_commit(new)
+            except StoreNotDurableError as exc:
+                _LOGGER.warning("EV audit not persisted: %s", exc)
+                self.ev_audit_dropped += len(payloads)
+
+    def _audit_ev_decision(self, report: dict | None, now: datetime) -> None:
+        """One event when what the car is doing and why changes (not on every reading), at most a
+        handful per hour: a flapping input must not flood the audit."""
+        if report is None:
+            return
+        gate = report.get("grid_charge") or {}
+        key = (report.get("state"), report.get("reason"), gate.get("allowed"),
+               report.get("force_requested"), report.get("deye_mode_required"))
+        if key == self._ev_audit_key:
+            return
+        self._ev_audit_key = key
+        self._ev_audit_times = [t for t in self._ev_audit_times if now - t < timedelta(hours=1)]
+        if len(self._ev_audit_times) >= EV_DECISION_EVENTS_PER_HOUR:
+            self.ev_audit_dropped += 1
+            return
+        self._ev_audit_times.append(now)
+        request = report.get("request") or {}
+        self.queue_ev_audit([{
+            "kind": "ev_decision", "ev_state": report.get("state"), "reason": report.get("reason"),
+            "soc_pct": report.get("soc_pct"), "soc_reason": report.get("soc_reason"),
+            "target_pct": report.get("effective_target_pct"),
+            "force": report.get("force_requested"),
+            "grid_charge": gate or None,
+            "deye_mode_required": report.get("deye_mode_required"),
+            "request": request or None, "drive_tomorrow": report.get("drive_tomorrow"),
+            "sun_window_day": (report.get("sun") or {}).get("first_window_day"),
+            "withheld": report.get("intents_withheld")}])
+
     def _ev_report(self, now: datetime) -> dict | None:
         return self.ev.evaluate(
             now, self.guard_report, self._grid_present(), self.ev_force,
@@ -304,6 +364,7 @@ class EnergyController:
             return
         changed = _ev_decision(report) != _ev_decision(self.ev_report)
         self.ev_report = report
+        self._audit_ev_decision(report, now)
         if changed:
             self._notify()
         if report is not None and report.get("car_limit_desired") is not None:

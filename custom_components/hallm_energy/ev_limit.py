@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import Callable
 from datetime import datetime, timedelta
 
 from homeassistant.core import HomeAssistant
@@ -29,8 +30,10 @@ RETRY_AFTER = timedelta(minutes=5)
 
 class CarLimitWriter:
     def __init__(self, hass: HomeAssistant, config: EnergyConfig, gates: Gates,
-                 io: DeviceIO | None = None) -> None:
+                 io: DeviceIO | None = None,
+                 audit: Callable[[list[dict]], None] | None = None) -> None:
         self.hass, self.config, self.gates = hass, config, gates
+        self._audit = audit
         self.io = io or DeviceIO(hass, call_timeout_s=30.0, readback_timeout_s=CONFIRM_TIMEOUT_S,
                                  poll_interval_s=5.0)
         self._task: asyncio.Task | None = None
@@ -73,6 +76,9 @@ class CarLimitWriter:
             return
         self.last_write = result
         _LOGGER.info("EV car limit %s=%s: %s", entity, desired, result.outcome)
+        if self._audit is not None:
+            self._audit([{"kind": "ev_limit_write", "entity_id": entity, "value": desired,
+                          "outcome": result.outcome, "detail": result.detail}])
         if result.outcome == "confirmed":
             self.last_result, self._retry_at = "done", None
         else:

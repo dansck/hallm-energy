@@ -57,7 +57,9 @@ class EvWriteReport:
 class EvExecutor:
     def __init__(self, io: DeviceIO, config: EnergyConfig, gates: Gates,
                  grid_busy: Callable[[], bool] | None = None,
-                 start_gate: StartGate | None = None) -> None:
+                 start_gate: StartGate | None = None,
+                 audit: Callable[[list[dict]], None] | None = None) -> None:
+        self._audit = audit
         self.io, self.config, self.gates = io, config, gates
         self.start_gate = start_gate or StartGate()
         self._grid_busy = grid_busy or (lambda: False)
@@ -139,6 +141,23 @@ class EvExecutor:
         finally:
             if gate_taken:
                 self.start_gate.release()
+            self._record(report, out)
+
+    def _record(self, report: dict, out: EvWriteReport) -> None:
+        """What was written, and why a sequence stopped, for the audit (after the sequence, so
+        recording never holds a write up). Held and idle outcomes are not events."""
+        if self._audit is None:
+            return
+        targets = {self._entity(t): t for t in ("pause", "intensity", "max_intensity", "dynamic",
+                                                "deye_mode")}
+        events = [{"kind": "ev_write", "target": targets.get(w.op.entity_id),
+                   "entity_id": w.op.entity_id, "value": w.op.value, "outcome": w.outcome,
+                   "detail": w.detail, "ev_state": report.get("state")} for w in out.writes]
+        if out.result in ("aborted", "preempted"):
+            events.append({"kind": "ev_sequence", "result": out.result, "reason": out.reason,
+                           "ev_state": report.get("state")})
+        if events:
+            self._audit(events)
 
     async def _run(self, report: dict, intents: list, out: EvWriteReport, now: datetime,
                    recheck: Callable[[], dict | None], protective: bool) -> EvWriteReport:

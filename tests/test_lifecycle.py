@@ -771,3 +771,28 @@ def test_after_the_hold_ends_a_paused_grant_proposes_enabling_again():
     resumed = step(held.state, now=T0 + timedelta(minutes=45),
                    reading=reading(7205.0, T0 + timedelta(minutes=45)))
     assert resumed.charge_enable is True and resumed.step_id is not None
+
+
+def test_extra_audit_events_are_added_once_and_bump_the_revision():
+    from custom_components.hallm_energy.lifecycle import add_audit_events
+
+    state = empty_state()
+    events = [("ev_write:1", {"kind": "ev_write"}), ("ev_write:2", {"kind": "ev_write"})]
+    added = add_audit_events(state, events, T0, limit=500)
+    assert [e.event_id for e in added.pending_audit][-2:] == ["ev_write:1", "ev_write:2"]
+    assert added.state_revision == state.state_revision + 1
+    again = add_audit_events(added, events, T0, limit=500)
+    assert again is added  # nothing new: the very same state
+
+
+def test_extra_audit_events_never_use_the_room_reserved_for_the_grants():
+    from custom_components.hallm_energy.lifecycle import add_audit_events
+
+    state = empty_state()
+    room = 3
+    limit = len(state.pending_audit) + room
+    many = [(f"ev_write:{i}", {"kind": "ev_write"}) for i in range(10)]
+    capped = add_audit_events(state, many, T0, limit=limit)
+    assert len(capped.pending_audit) == limit
+    full = add_audit_events(capped, [("ev_write:x", {"kind": "ev_write"})], T0, limit=limit)
+    assert full is capped

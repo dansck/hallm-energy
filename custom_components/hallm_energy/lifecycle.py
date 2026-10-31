@@ -83,6 +83,23 @@ def _audit(
             PendingAuditEvent(event_id=event_id, payload=payload, created_at=at))
 
 
+def add_audit_events(
+    state: StoreState, events: list[tuple[str, dict[str, Any]]], now: datetime, *, limit: int
+) -> StoreState:
+    """Events that are not part of a grant's life (the car's writes and decisions). Added once per
+    `event_id`; nothing is added once `limit` events are pending, so these never use up the room
+    the grants need (a full outbox starts no new grant)."""
+    audit = state.pending_audit
+    for event_id, payload in events:
+        if len(audit) >= limit:
+            break
+        if not any(e.event_id == event_id for e in audit):
+            audit = (*audit, PendingAuditEvent(event_id=event_id, payload=payload, created_at=now))
+    if audit == state.pending_audit:
+        return state
+    return _bump(state, pending_audit=audit)
+
+
 def _core_grant(active: ActiveGrant) -> Grant:
     identity = active.identity
     return Grant(
